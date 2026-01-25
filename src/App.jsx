@@ -170,6 +170,9 @@ const extractDataFromSource = (workbook) => {
       n1: Number(row[n1Col]) || 0,
       n2: Number(row[n2Col]) || 0,
       n3: Number(row[n3Col]) || 0,
+      // Keep raw row data for template export (up to column 136)
+      rawRow: row.slice(0, Math.max(136, n3Col + 1)),
+      colPositions: { nCol, n1Col, n2Col, n3Col },
     });
   }
 
@@ -363,104 +366,224 @@ export default function App() {
     setProcessing(false);
   };
 
-  // Export to Excel
+  // Export to Excel - either update template or create new file
   const exportToExcel = () => {
     if (!processedData) return;
 
-    const wb = XLSX.utils.book_new();
+    let wb;
+    let fileName;
+    const dateStr = new Date().toISOString().slice(0, 10);
 
-    // Daily sheets
-    Object.entries(processedData).forEach(([sheetName, rows]) => {
-      if (rows.length === 0) return;
+    // ===== CASE 1: Update existing template =====
+    if (mainWorkbook) {
+      wb = mainWorkbook;
 
-      const headers = [
-        'PART NUMBER',
-        'PART CODE',
-        'PART DESC',
-        'SUPP CODE',
-        'SHIPPING DOCK',
-        'DOCK CODE',
-        'CAR FAMILY',
-        'PACKING SIZE',
-        'N',
-        'N+1',
-        'N+2',
-        'N+3',
+      // Update Daily sheets (BP Daily, BPK Daily, GW Daily, SR Daily)
+      Object.entries(processedData).forEach(([sheetName, rows]) => {
+        const ws = wb.Sheets[sheetName];
+        if (!ws) return; // Sheet doesn't exist in template
+
+        const dataStartRow = 14; // Data starts at row 14 (index 13)
+
+        // Clear old data first (rows 14 onwards)
+        const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+        for (let r = dataStartRow - 1; r <= range.e.r; r++) {
+          for (let c = 0; c <= range.e.c; c++) {
+            const cellRef = XLSX.utils.encode_cell({ r, c });
+            delete ws[cellRef];
+          }
+        }
+
+        // Write new data starting at row 14
+        rows.forEach((row, idx) => {
+          const rowNum = dataStartRow + idx;
+
+          // If we have raw row data, use it to preserve all columns
+          if (row.rawRow && row.colPositions) {
+            // Write raw row data
+            row.rawRow.forEach((val, colIdx) => {
+              const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: colIdx });
+              if (val !== undefined && val !== null && val !== '') {
+                ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
+              }
+            });
+          } else {
+            // Write basic columns (A-H + N columns)
+            const basicData = [
+              row.partNumber,
+              row.partCode,
+              row.partDesc,
+              row.suppCode,
+              row.shippingDock,
+              row.dockCode,
+              row.carFamily,
+              row.packingSize,
+            ];
+            basicData.forEach((val, colIdx) => {
+              const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: colIdx });
+              if (val !== undefined && val !== null && val !== '') {
+                ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
+              }
+            });
+
+            // Write N values at default positions
+            const nPositions = [
+              { col: 39, val: row.n },
+              { col: 71, val: row.n1 },
+              { col: 103, val: row.n2 },
+              { col: 135, val: row.n3 },
+            ];
+            nPositions.forEach(({ col, val }) => {
+              const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: col });
+              ws[cellRef] = { v: val, t: 'n' };
+            });
+          }
+        });
+
+        // Update sheet range
+        const newRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+        newRange.e.r = Math.max(newRange.e.r, dataStartRow - 1 + rows.length);
+        ws['!ref'] = XLSX.utils.encode_range(newRange);
+      });
+
+      // Update Sheet2 (Summary/Pivot) if exists
+      if (summaryData && wb.Sheets['Sheet2']) {
+        const ws = wb.Sheets['Sheet2'];
+        const pivotStartRow = 4; // Pivot data typically starts at row 4
+
+        // Clear old pivot data
+        const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+        for (let r = pivotStartRow - 1; r <= range.e.r; r++) {
+          for (let c = 0; c <= 5; c++) {
+            const cellRef = XLSX.utils.encode_cell({ r, c });
+            delete ws[cellRef];
+          }
+        }
+
+        // Write new summary data
+        summaryData.forEach((row, idx) => {
+          const rowNum = pivotStartRow + idx;
+          const rowData = [row.partNumber, row.n, row.n1, row.n2, row.n3];
+          rowData.forEach((val, colIdx) => {
+            const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: colIdx });
+            ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
+          });
+        });
+
+        // Add Grand Total
+        const grandTotalRow = pivotStartRow + summaryData.length;
+        const grandTotalData = ['Grand Total', totals.n, totals.n1, totals.n2, totals.n3];
+        grandTotalData.forEach((val, colIdx) => {
+          const cellRef = XLSX.utils.encode_cell({ r: grandTotalRow - 1, c: colIdx });
+          ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
+        });
+
+        // Update range
+        const newRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+        newRange.e.r = Math.max(newRange.e.r, grandTotalRow);
+        ws['!ref'] = XLSX.utils.encode_range(newRange);
+      }
+
+      fileName = `Production_Updated_${dateStr}.xlsx`;
+    }
+    // ===== CASE 2: Create new file from scratch =====
+    else {
+      wb = XLSX.utils.book_new();
+
+      // Daily sheets
+      Object.entries(processedData).forEach(([sheetName, rows]) => {
+        if (rows.length === 0) return;
+
+        const headers = [
+          'PART NUMBER',
+          'PART CODE',
+          'PART DESC',
+          'SUPP CODE',
+          'SHIPPING DOCK',
+          'DOCK CODE',
+          'CAR FAMILY',
+          'PACKING SIZE',
+          'N',
+          'N+1',
+          'N+2',
+          'N+3',
+        ];
+
+        const wsData = [headers];
+        rows.forEach((row) => {
+          wsData.push([
+            row.partNumber,
+            row.partCode,
+            row.partDesc,
+            row.suppCode,
+            row.shippingDock,
+            row.dockCode,
+            row.carFamily,
+            row.packingSize,
+            row.n,
+            row.n1,
+            row.n2,
+            row.n3,
+          ]);
+        });
+
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        XLSX.utils.book_append_sheet(wb, ws, sheetName.replace(' ', '_'));
+      });
+
+      // Summary sheet
+      if (summaryData) {
+        const summaryHeaders = ['Part Number', 'Plants', 'Sum of N', 'Sum of N+1', 'Sum of N+2', 'Sum of N+3', 'Total'];
+        const summaryRows = [summaryHeaders];
+
+        summaryData.forEach((row) => {
+          summaryRows.push([
+            row.partNumber,
+            row.plants,
+            row.n,
+            row.n1,
+            row.n2,
+            row.n3,
+            row.n + row.n1 + row.n2 + row.n3,
+          ]);
+        });
+
+        // Grand Total
+        summaryRows.push([
+          'Grand Total',
+          `${summaryData.length} Parts`,
+          totals.n,
+          totals.n1,
+          totals.n2,
+          totals.n3,
+          totals.n + totals.n1 + totals.n2 + totals.n3,
+        ]);
+
+        const ws = XLSX.utils.aoa_to_sheet(summaryRows);
+        XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+      }
+
+      // Verification sheet
+      const missingPlantsExport = PLANTS.filter((p) => fileCounts[p] === 0);
+      const verificationData = [
+        ['Item', 'Status', 'Detail'],
+        ['ไฟล์หลัก (Template)', mainFile ? 'พร้อม' : 'ไม่มี (ไม่บังคับ)', mainFile?.name || '-'],
+        ['จำนวนไฟล์ทั้งหมด', totalSourceFiles > 0 ? 'พร้อม' : 'ไม่พบ', `${totalSourceFiles} ไฟล์`],
+        ['โรงงานที่มีไฟล์', '', PLANTS.filter((p) => fileCounts[p] > 0).join(', ') || '-'],
+        ['โรงงานที่ไม่มีไฟล์', missingPlantsExport.length > 0 ? 'ขาด' : 'ครบ', missingPlantsExport.join(', ') || '-'],
       ];
 
-      const wsData = [headers];
-      rows.forEach((row) => {
-        wsData.push([
-          row.partNumber,
-          row.partCode,
-          row.partDesc,
-          row.suppCode,
-          row.shippingDock,
-          row.dockCode,
-          row.carFamily,
-          row.packingSize,
-          row.n,
-          row.n1,
-          row.n2,
-          row.n3,
-        ]);
+      PLANTS.forEach((p) => {
+        verificationData.push([`ไฟล์ ${p}`, fileCounts[p] > 0 ? 'พร้อม' : 'ไม่พบ', `${fileCounts[p]} ไฟล์`]);
       });
 
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
-      XLSX.utils.book_append_sheet(wb, ws, sheetName.replace(' ', '_'));
-    });
+      const wsVerify = XLSX.utils.aoa_to_sheet(verificationData);
+      XLSX.utils.book_append_sheet(wb, wsVerify, 'Verification');
 
-    // Summary sheet
-    if (summaryData) {
-      const summaryHeaders = ['Part Number', 'Plants', 'Sum of N', 'Sum of N+1', 'Sum of N+2', 'Sum of N+3', 'Total'];
-      const summaryRows = [summaryHeaders];
-
-      summaryData.forEach((row) => {
-        summaryRows.push([
-          row.partNumber,
-          row.plants,
-          row.n,
-          row.n1,
-          row.n2,
-          row.n3,
-          row.n + row.n1 + row.n2 + row.n3,
-        ]);
-      });
-
-      // Grand Total
-      summaryRows.push([
-        'Grand Total',
-        `${summaryData.length} Parts`,
-        totals.n,
-        totals.n1,
-        totals.n2,
-        totals.n3,
-        totals.n + totals.n1 + totals.n2 + totals.n3,
-      ]);
-
-      const ws = XLSX.utils.aoa_to_sheet(summaryRows);
-      XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+      fileName = `Production_Summary_${dateStr}.xlsx`;
     }
 
-    // Verification sheet
-    const missingPlants = PLANTS.filter((p) => fileCounts[p] === 0);
-    const verificationData = [
-      ['Item', 'Status', 'Detail'],
-      ['ไฟล์หลัก (Template)', mainFile ? 'พร้อม' : 'ไม่มี (ไม่บังคับ)', mainFile?.name || '-'],
-      ['จำนวนไฟล์ทั้งหมด', totalSourceFiles > 0 ? 'พร้อม' : 'ไม่พบ', `${totalSourceFiles} ไฟล์`],
-      ['โรงงานที่มีไฟล์', '', PLANTS.filter((p) => fileCounts[p] > 0).join(', ') || '-'],
-      ['โรงงานที่ไม่มีไฟล์', missingPlants.length > 0 ? 'ขาด' : 'ครบ', missingPlants.join(', ') || '-'],
-    ];
-
-    PLANTS.forEach((p) => {
-      verificationData.push([`ไฟล์ ${p}`, fileCounts[p] > 0 ? 'พร้อม' : 'ไม่พบ', `${fileCounts[p]} ไฟล์`]);
-    });
-
-    const wsVerify = XLSX.utils.aoa_to_sheet(verificationData);
-    XLSX.utils.book_append_sheet(wb, wsVerify, 'Verification');
-
-    // Download
-    const fileName = `Production_Summary_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    // Download the file
     XLSX.writeFile(wb, fileName);
   };
 
@@ -728,16 +851,17 @@ export default function App() {
                   onClick={exportToExcel}
                   className="px-5 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                 >
-                  ดาวน์โหลดไฟล์สรุป
+                  {mainWorkbook ? 'ดาวน์โหลด (อัปเดตเทมเพลท)' : 'ดาวน์โหลดไฟล์สรุป'}
                 </button>
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                 <div className="border border-slate-200 rounded-lg p-3">
-                  <p className="text-slate-500">ไฟล์หลัก</p>
+                  <p className="text-slate-500">ไฟล์หลัก (Template)</p>
                   <p className={`font-semibold ${mainFile ? 'text-emerald-600' : 'text-slate-400'}`}>
-                    {mainFile ? 'พร้อม' : 'ไม่มี (ไม่บังคับ)'}
+                    {mainFile ? 'พร้อมใช้เป็นเทมเพลท' : 'ไม่มี (สร้างไฟล์ใหม่)'}
                   </p>
+                  {mainFile && <p className="text-xs text-slate-400 truncate">{mainFile.name}</p>}
                 </div>
                 <div className="border border-slate-200 rounded-lg p-3">
                   <p className="text-slate-500">ไฟล์ประมวลผลสำเร็จ</p>
@@ -918,8 +1042,13 @@ export default function App() {
               <span className="w-6 h-6">
                 <Icons.Download />
               </span>
-              ดาวน์โหลดไฟล์ Excel สรุป
+              {mainWorkbook ? 'ดาวน์โหลดไฟล์ (อัปเดตเทมเพลท)' : 'ดาวน์โหลดไฟล์ Excel สรุป'}
             </button>
+            {mainWorkbook && (
+              <p className="text-center text-sm text-slate-500 mt-2">
+                * ข้อมูลจะถูกแทนที่ลงในไฟล์เทมเพลทที่อัปโหลด
+              </p>
+            )}
           </div>
         )}
 
