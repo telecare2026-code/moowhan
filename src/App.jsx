@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 
 // ==================== ICONS ====================
@@ -103,14 +104,14 @@ const categorizeFile = (filename) => {
 };
 
 // ==================== EXCEL FUNCTIONS ====================
-const readExcelFile = async (file) => {
+// Read file with xlsx (for source files - no format needed)
+const readExcelFileXLSX = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = (e) => {
       try {
-        const buffer = e.target.result;
-        const workbook = new ExcelJS.Workbook();
-        await workbook.xlsx.load(buffer);
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
         resolve(workbook);
       } catch (err) {
         reject(err);
@@ -121,11 +122,115 @@ const readExcelFile = async (file) => {
   });
 };
 
-const extractDataFromSource = (workbook) => {
+// Read file with ExcelJS (for template - needs format preservation)
+const readExcelFileExcelJS = async (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const buffer = e.target.result;
+        const workbook = new ExcelJS.Workbook();
+        
+        // Try to load with error handling
+        try {
+          await workbook.xlsx.load(buffer);
+        } catch (loadErr) {
+          // If ExcelJS fails, try to read with xlsx first to validate file
+          try {
+            const data = new Uint8Array(buffer);
+            XLSX.read(data, { type: 'array' });
+            // File is valid, but ExcelJS can't read it - try loading again
+            const workbook2 = new ExcelJS.Workbook();
+            await workbook2.xlsx.load(buffer);
+            resolve(workbook2);
+            return;
+          } catch (xlsxErr) {
+            throw loadErr; // Original ExcelJS error
+          }
+        }
+        
+        // Validate workbook was loaded
+        if (!workbook || workbook.worksheets.length === 0) {
+          throw new Error('ไฟล์ Excel ไม่มี worksheet');
+        }
+        
+        resolve(workbook);
+      } catch (err) {
+        const errorMsg = err.message || String(err);
+        if (errorMsg.includes('comments') || errorMsg.includes('undefined') || errorMsg.includes('Cannot read')) {
+          reject(new Error('ไฟล์ Excel มีโครงสร้างไม่สมบูรณ์ กรุณาลองเปิดและบันทึกไฟล์ใหม่ใน Excel หรือใช้ไฟล์ .xlsx ที่บันทึกจาก Excel เวอร์ชันใหม่'));
+        } else {
+          reject(new Error(`ไม่สามารถอ่านไฟล์ Excel: ${errorMsg}`));
+        }
+      }
+    };
+    reader.onerror = () => reject(new Error('ไม่สามารถอ่านไฟล์ได้'));
+    reader.readAsArrayBuffer(file);
+  });
+};
+
+// Extract data from xlsx workbook (for source files)
+const extractDataFromSourceXLSX = (workbook) => {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+  const headerRowIndex = 12; // Row 13 (0-based)
+  const dataStartIndex = 13; // Row 14 (0-based)
+
+  if (jsonData.length <= dataStartIndex) return [];
+
+  const headers = jsonData[headerRowIndex] || [];
+  const data = [];
+
+  // Find N, N+1, N+2, N+3 columns
+  let nCol = -1, n1Col = -1, n2Col = -1, n3Col = -1;
+  headers.forEach((h, i) => {
+    const val = String(h || '').trim().toUpperCase();
+    if (val === 'N' && nCol === -1) nCol = i;
+    else if (val === 'N+1' && n1Col === -1) n1Col = i;
+    else if (val === 'N+2' && n2Col === -1) n2Col = i;
+    else if (val === 'N+3' && n3Col === -1) n3Col = i;
+  });
+
+  // Default positions
+  if (nCol === -1) nCol = 39;
+  if (n1Col === -1) n1Col = 71;
+  if (n2Col === -1) n2Col = 103;
+  if (n3Col === -1) n3Col = 135;
+
+  for (let i = dataStartIndex; i < jsonData.length; i++) {
+    const row = jsonData[i];
+    if (!row || !row[0] || row[0] === '<EOF>') continue;
+
+    const partNumber = String(row[0] || '').trim();
+    if (!partNumber || partNumber.length < 5) continue;
+
+    data.push({
+      partNumber,
+      partCode: row[1] || '',
+      partDesc: row[2] || '',
+      suppCode: row[3] || '',
+      shippingDock: row[4] || '',
+      dockCode: row[5] || '',
+      carFamily: row[6] || '',
+      packingSize: row[7] || 0,
+      n: Number(row[nCol]) || 0,
+      n1: Number(row[n1Col]) || 0,
+      n2: Number(row[n2Col]) || 0,
+      n3: Number(row[n3Col]) || 0,
+      rawRow: row.slice(0, Math.max(136, n3Col + 1)),
+      colPositions: { nCol, n1Col, n2Col, n3Col },
+    });
+  }
+
+  return data;
+};
+
+// Extract data from ExcelJS workbook (for template - not used for source files)
+const extractDataFromSourceExcelJS = (workbook) => {
   const worksheet = workbook.worksheets[0];
   if (!worksheet) return [];
 
-  // Find header row (row 13, 1-based)
   const headerRowNumber = 13;
   const dataStartRow = 14;
 
@@ -139,11 +244,8 @@ const extractDataFromSource = (workbook) => {
 
   const data = [];
 
-  // Find N, N+1, N+2, N+3 total columns
-  let nCol = -1,
-    n1Col = -1,
-    n2Col = -1,
-    n3Col = -1;
+  // Find N, N+1, N+2, N+3 columns
+  let nCol = -1, n1Col = -1, n2Col = -1, n3Col = -1;
   headers.forEach((h, i) => {
     const val = String(h || '').trim().toUpperCase();
     if (val === 'N' && nCol === -1) nCol = i;
@@ -152,13 +254,11 @@ const extractDataFromSource = (workbook) => {
     else if (val === 'N+3' && n3Col === -1) n3Col = i;
   });
 
-  // Default positions if not found
   if (nCol === -1) nCol = 39;
   if (n1Col === -1) n1Col = 71;
   if (n2Col === -1) n2Col = 103;
   if (n3Col === -1) n3Col = 135;
 
-  // Extract data rows
   worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber < dataStartRow) return;
 
@@ -185,7 +285,6 @@ const extractDataFromSource = (workbook) => {
       n1: Number(row.getCell(n1Col + 1).value) || 0,
       n2: Number(row.getCell(n2Col + 1).value) || 0,
       n3: Number(row.getCell(n3Col + 1).value) || 0,
-      // Keep raw row data and cell references for template export
       rawRow,
       rowNumber,
       colPositions: { nCol, n1Col, n2Col, n3Col },
@@ -248,15 +347,28 @@ export default function App() {
     if (!file) return;
 
     try {
-      // Read with ExcelJS (preserves all formatting)
-      const workbook = await readExcelFile(file);
-      setMainFile({
-        name: file.name,
-        size: file.size,
-        sheets: workbook.worksheets.map((ws) => ws.name),
-      });
-      setMainWorkbook(workbook);
-      setError(null);
+      // Try ExcelJS first (for format preservation)
+      try {
+        const workbook = await readExcelFileExcelJS(file);
+        setMainFile({
+          name: file.name,
+          size: file.size,
+          sheets: workbook.worksheets.map((ws) => ws.name),
+        });
+        setMainWorkbook(workbook);
+        setError(null);
+      } catch (excelJSErr) {
+        // If ExcelJS fails, fallback to xlsx (but warn about format loss)
+        console.warn('ExcelJS failed, using xlsx fallback:', excelJSErr);
+        const workbook = await readExcelFileXLSX(file);
+        setMainFile({
+          name: file.name,
+          size: file.size,
+          sheets: workbook.SheetNames,
+        });
+        setMainWorkbook(null); // Can't preserve format with xlsx
+        setError('ไฟล์ถูกอ่านด้วย xlsx (อาจไม่สามารถรักษาฟอร์แมตได้ 100%)');
+      }
     } catch (err) {
       setError('ไม่สามารถอ่านไฟล์หลักได้: ' + err.message);
     }
@@ -332,8 +444,9 @@ export default function App() {
           updatedFiles[i] = { ...fileInfo, status: 'processing' };
           setSourceFiles([...updatedFiles]);
 
-          const workbook = await readExcelFile(fileInfo.file);
-          const extracted = extractDataFromSource(workbook);
+          // Use xlsx for source files (no format needed)
+          const workbook = await readExcelFileXLSX(fileInfo.file);
+          const extracted = extractDataFromSourceXLSX(workbook);
           const sheetName = `${fileInfo.category} Daily`;
 
           if (data[sheetName]) {
@@ -402,7 +515,9 @@ export default function App() {
     const dateStr = new Date().toISOString().slice(0, 10);
 
     // ===== CASE 1: Update existing template (preserve formatting) =====
-    if (mainWorkbook) {
+    // Only use ExcelJS workbook for format preservation
+    if (mainWorkbook && mainWorkbook.worksheets) {
+      // This is an ExcelJS workbook
       workbook = mainWorkbook;
 
       // Update Daily sheets (BP Daily, BPK Daily, GW Daily, SR Daily)
@@ -667,8 +782,8 @@ export default function App() {
                 <Icons.File />
               </div>
               <div>
-                <h1 className="text-xl font-bold">Production Data Consolidator</h1>
-                <p className="text-sm text-slate-500">TMT Camera Production Plan Summary</p>
+                <h1 className="text-xl font-bold">หมูหวานนน</h1>
+                <p className="text-sm text-slate-500">Plan Summary</p>
               </div>
             </div>
             <button
@@ -1129,7 +1244,7 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-200 mt-12 py-6 bg-white">
         <div className="max-w-7xl mx-auto px-4 text-center text-slate-400 text-sm">
-          Production Data Consolidator v1.0 • TMT Camera Production Plan Summary System
+          หมูหวานนน v1.0 • 
         </div>
       </footer>
     </div>
