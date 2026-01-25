@@ -103,13 +103,20 @@ const categorizeFile = (filename) => {
 };
 
 // ==================== EXCEL FUNCTIONS ====================
-const readExcelFile = (file) => {
+const readExcelFile = (file, preserveStyles = false) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, { type: 'array' });
+        // Read with cellStyles option to preserve formatting
+        const options = { 
+          type: 'array',
+          cellStyles: preserveStyles,
+          cellNF: preserveStyles, // Number formats
+          cellDates: true,
+        };
+        const workbook = XLSX.read(data, options);
         resolve(workbook);
       } catch (err) {
         reject(err);
@@ -234,7 +241,8 @@ export default function App() {
     if (!file) return;
 
     try {
-      const workbook = await readExcelFile(file);
+      // Read with styles preserved for template
+      const workbook = await readExcelFile(file, true);
       setMainFile({
         name: file.name,
         size: file.size,
@@ -378,6 +386,45 @@ export default function App() {
     setProcessing(false);
   };
 
+  // Helper: Update cell value while preserving style
+  const updateCell = (ws, row, col, value) => {
+    const cellRef = XLSX.utils.encode_cell({ r: row, c: col });
+    const existingCell = ws[cellRef];
+    
+    if (value === undefined || value === null || value === '') {
+      // Clear value but keep style if cell exists
+      if (existingCell) {
+        existingCell.v = '';
+        if (existingCell.w) delete existingCell.w; // Clear formatted text
+      }
+      return;
+    }
+
+    const cellType = typeof value === 'number' ? 'n' : 's';
+    
+    if (existingCell) {
+      // Preserve existing style, just update value
+      existingCell.v = value;
+      existingCell.t = cellType;
+      if (existingCell.w) delete existingCell.w; // Clear cached formatted text
+    } else {
+      // Create new cell
+      ws[cellRef] = { v: value, t: cellType };
+    }
+  };
+
+  // Helper: Copy cell style from template row
+  const copyCellStyle = (ws, fromRow, toRow, col) => {
+    const fromRef = XLSX.utils.encode_cell({ r: fromRow, c: col });
+    const toRef = XLSX.utils.encode_cell({ r: toRow, c: col });
+    const fromCell = ws[fromRef];
+    const toCell = ws[toRef];
+    
+    if (fromCell && fromCell.s && toCell) {
+      toCell.s = fromCell.s; // Copy style reference
+    }
+  };
+
   // Export to Excel - either update template or create new file
   const exportToExcel = () => {
     if (!processedData) return;
@@ -386,48 +433,45 @@ export default function App() {
     let fileName;
     const dateStr = new Date().toISOString().slice(0, 10);
 
-    // ===== CASE 1: Update existing template =====
+    // ===== CASE 1: Update existing template (preserve formatting) =====
     if (mainWorkbook) {
       wb = mainWorkbook;
-
-      // Data column limit - only clear/write columns A to EJ (0-139)
-      // This preserves summary sections on the right side of the sheet
-      const DATA_COL_LIMIT = 139;
 
       // Update Daily sheets (BP Daily, BPK Daily, GW Daily, SR Daily)
       Object.entries(processedData).forEach(([sheetName, rows]) => {
         const ws = wb.Sheets[sheetName];
         if (!ws) return; // Sheet doesn't exist in template
 
-        const dataStartRow = 14; // Data starts at row 14 (index 13)
+        const dataStartRow = 14; // Data starts at row 14 (index 13, 0-based)
+        const templateRow = 13; // Row 14 in 0-based index (use as style template)
 
-        // Clear old data in data columns only (preserve right side summary)
+        // Get original range
         const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+        const maxDataCol = Math.min(139, range.e.c); // Limit to column EJ
+
+        // Clear old data rows (just values, preserve structure for cells that exist)
         for (let r = dataStartRow - 1; r <= Math.min(range.e.r, dataStartRow + 100); r++) {
-          for (let c = 0; c <= Math.min(DATA_COL_LIMIT, range.e.c); c++) {
+          for (let c = 0; c <= maxDataCol; c++) {
             const cellRef = XLSX.utils.encode_cell({ r, c });
             if (ws[cellRef]) {
-              delete ws[cellRef];
+              ws[cellRef].v = ''; // Clear value
+              if (ws[cellRef].w) delete ws[cellRef].w;
             }
           }
         }
 
         // Write new data starting at row 14
         rows.forEach((row, idx) => {
-          const rowNum = dataStartRow + idx;
+          const rowIdx = templateRow + idx; // 0-based row index
 
           // If we have raw row data, use it to preserve all columns
           if (row.rawRow && row.colPositions) {
-            // Write raw row data (only up to DATA_COL_LIMIT)
             row.rawRow.forEach((val, colIdx) => {
-              if (colIdx > DATA_COL_LIMIT) return;
-              const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: colIdx });
-              if (val !== undefined && val !== null && val !== '') {
-                ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
-              }
+              if (colIdx > maxDataCol) return;
+              updateCell(ws, rowIdx, colIdx, val);
             });
           } else {
-            // Write basic columns (A-H + N columns)
+            // Write basic columns (A-H)
             const basicData = [
               row.partNumber,
               row.partCode,
@@ -439,67 +483,61 @@ export default function App() {
               row.packingSize,
             ];
             basicData.forEach((val, colIdx) => {
-              const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: colIdx });
-              if (val !== undefined && val !== null && val !== '') {
-                ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
-              }
+              updateCell(ws, rowIdx, colIdx, val);
             });
 
-            // Write N values at default positions (AN=39, BT=71, CZ=103, EF=135)
-            const nPositions = [
-              { col: 39, val: row.n },
-              { col: 71, val: row.n1 },
-              { col: 103, val: row.n2 },
-              { col: 135, val: row.n3 },
-            ];
-            nPositions.forEach(({ col, val }) => {
-              const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: col });
-              ws[cellRef] = { v: val, t: 'n' };
-            });
+            // Write N values at positions (AN=39, BT=71, CZ=103, EF=135)
+            updateCell(ws, rowIdx, 39, row.n);
+            updateCell(ws, rowIdx, 71, row.n1);
+            updateCell(ws, rowIdx, 103, row.n2);
+            updateCell(ws, rowIdx, 135, row.n3);
           }
         });
 
-        // Update sheet range (preserve original range if larger)
+        // Update sheet range
         const newRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-        newRange.e.r = Math.max(newRange.e.r, dataStartRow - 1 + rows.length);
+        newRange.e.r = Math.max(newRange.e.r, templateRow + rows.length - 1);
         ws['!ref'] = XLSX.utils.encode_range(newRange);
       });
 
-      // Update Sheet2 (Summary/Pivot) if exists - preserve existing structure
+      // Update Sheet2 (Summary/Pivot) if exists
       if (summaryData && wb.Sheets['Sheet2']) {
         const ws = wb.Sheets['Sheet2'];
-        const pivotStartRow = 4; // Pivot data typically starts at row 4
+        const pivotStartRow = 4; // Pivot data typically starts at row 4 (0-based: 3)
 
-        // Only clear columns A-E for pivot data
+        // Clear old pivot values (preserve cells)
         const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
         for (let r = pivotStartRow - 1; r <= Math.min(range.e.r, pivotStartRow + summaryData.length + 5); r++) {
           for (let c = 0; c <= 4; c++) {
             const cellRef = XLSX.utils.encode_cell({ r, c });
-            if (ws[cellRef]) delete ws[cellRef];
+            if (ws[cellRef]) {
+              ws[cellRef].v = '';
+              if (ws[cellRef].w) delete ws[cellRef].w;
+            }
           }
         }
 
         // Write new summary data
         summaryData.forEach((row, idx) => {
-          const rowNum = pivotStartRow + idx;
-          const rowData = [row.partNumber, row.n, row.n1, row.n2, row.n3];
-          rowData.forEach((val, colIdx) => {
-            const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: colIdx });
-            ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
-          });
+          const rowIdx = pivotStartRow - 1 + idx;
+          updateCell(ws, rowIdx, 0, row.partNumber);
+          updateCell(ws, rowIdx, 1, row.n);
+          updateCell(ws, rowIdx, 2, row.n1);
+          updateCell(ws, rowIdx, 3, row.n2);
+          updateCell(ws, rowIdx, 4, row.n3);
         });
 
         // Add Grand Total
-        const grandTotalRow = pivotStartRow + summaryData.length;
-        const grandTotalData = ['Grand Total', totals.n, totals.n1, totals.n2, totals.n3];
-        grandTotalData.forEach((val, colIdx) => {
-          const cellRef = XLSX.utils.encode_cell({ r: grandTotalRow - 1, c: colIdx });
-          ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
-        });
+        const grandTotalRowIdx = pivotStartRow - 1 + summaryData.length;
+        updateCell(ws, grandTotalRowIdx, 0, 'Grand Total');
+        updateCell(ws, grandTotalRowIdx, 1, totals.n);
+        updateCell(ws, grandTotalRowIdx, 2, totals.n1);
+        updateCell(ws, grandTotalRowIdx, 3, totals.n2);
+        updateCell(ws, grandTotalRowIdx, 4, totals.n3);
 
-        // Preserve original range
+        // Update range
         const newRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-        newRange.e.r = Math.max(newRange.e.r, grandTotalRow);
+        newRange.e.r = Math.max(newRange.e.r, grandTotalRowIdx);
         ws['!ref'] = XLSX.utils.encode_range(newRange);
       }
 
