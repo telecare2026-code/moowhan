@@ -591,6 +591,13 @@ export default function App() {
             });
           }
 
+          // Highlight color for newly added/updated cells (light yellow background)
+          const highlightFill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFFFE6' }, // Light yellow - clearly visible but not too bright
+          };
+
           // Write ALL columns from rawRow (preserve complete data including dates, formulas, etc.)
           if (rowData.rawRow) {
             // rawRow can be array (0-based) or object (1-based colNumber keys)
@@ -601,6 +608,10 @@ export default function App() {
                 if (colNumber <= 200 && (value !== undefined && value !== null && value !== '')) {
                   const cell = targetRow.getCell(colNumber);
                   cell.value = value;
+                  // Highlight newly added/updated cells
+                  if (!cell.style) cell.style = {};
+                  // Add highlight fill (will overlay existing fill if any)
+                  cell.style.fill = highlightFill;
                 }
               });
             } else {
@@ -612,35 +623,62 @@ export default function App() {
                   if (value !== undefined && value !== null && value !== '') {
                     const cell = targetRow.getCell(colNumber);
                     cell.value = value;
+                    // Highlight newly added/updated cells
+                    if (!cell.style) cell.style = {};
+                    cell.style.fill = highlightFill;
                   }
                 }
               });
             }
           } else {
             // Fallback: write basic columns if rawRow not available
-            targetRow.getCell(1).value = rowData.partNumber;
-            targetRow.getCell(2).value = rowData.partCode;
-            targetRow.getCell(3).value = rowData.partDesc;
-            targetRow.getCell(4).value = rowData.suppCode;
-            targetRow.getCell(5).value = rowData.shippingDock;
-            targetRow.getCell(6).value = rowData.dockCode;
-            targetRow.getCell(7).value = rowData.carFamily;
-            targetRow.getCell(8).value = rowData.packingSize;
+            const basicCols = [
+              { col: 1, val: rowData.partNumber },
+              { col: 2, val: rowData.partCode },
+              { col: 3, val: rowData.partDesc },
+              { col: 4, val: rowData.suppCode },
+              { col: 5, val: rowData.shippingDock },
+              { col: 6, val: rowData.dockCode },
+              { col: 7, val: rowData.carFamily },
+              { col: 8, val: rowData.packingSize },
+            ];
+
+            basicCols.forEach(({ col, val }) => {
+              if (val !== undefined && val !== null && val !== '') {
+                const cell = targetRow.getCell(col);
+                cell.value = val;
+                if (!cell.style) cell.style = {};
+                cell.style.fill = highlightFill;
+              }
+            });
 
             // Write N values at positions (AN=40, BT=72, CZ=104, EF=136, 1-based)
+            const nCols = [];
             if (rowData.colPositions) {
               const { nCol, n1Col, n2Col, n3Col } = rowData.colPositions;
-              targetRow.getCell(nCol + 1).value = rowData.n;
-              targetRow.getCell(n1Col + 1).value = rowData.n1;
-              targetRow.getCell(n2Col + 1).value = rowData.n2;
-              targetRow.getCell(n3Col + 1).value = rowData.n3;
+              nCols.push(
+                { col: nCol + 1, val: rowData.n },
+                { col: n1Col + 1, val: rowData.n1 },
+                { col: n2Col + 1, val: rowData.n2 },
+                { col: n3Col + 1, val: rowData.n3 }
+              );
             } else {
-              // Default positions
-              targetRow.getCell(40).value = rowData.n;
-              targetRow.getCell(72).value = rowData.n1;
-              targetRow.getCell(104).value = rowData.n2;
-              targetRow.getCell(136).value = rowData.n3;
+              nCols.push(
+                { col: 40, val: rowData.n },
+                { col: 72, val: rowData.n1 },
+                { col: 104, val: rowData.n2 },
+                { col: 136, val: rowData.n3 }
+              );
             }
+
+            nCols.forEach(({ col, val }) => {
+              if (val !== undefined && val !== null && val !== 0) {
+                const cell = targetRow.getCell(col);
+                cell.value = val;
+                if (!cell.style) cell.style = {};
+                cell.style.fill = highlightFill;
+              }
+            });
           }
 
           targetRow.commit();
