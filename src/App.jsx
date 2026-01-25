@@ -93,10 +93,12 @@ const formatSize = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
 
 const categorizeFile = (filename) => {
   const name = filename.toUpperCase();
-  if (name.startsWith('BP_') && !name.startsWith('BPK')) return 'BP';
-  if (name.startsWith('BPK')) return 'BPK';
-  if (name.startsWith('GW')) return 'GW';
-  if (name.startsWith('SR')) return 'SR';
+  // Handle both underscore and space separators: BP_xxx, BP xxx, BP-xxx
+  // Check BPK first (longer prefix) to avoid matching BP
+  if (name.startsWith('BPK_') || name.startsWith('BPK ') || name.startsWith('BPK-') || name.match(/^BPK[^A-Z]/)) return 'BPK';
+  if (name.startsWith('BP_') || name.startsWith('BP ') || name.startsWith('BP-') || name.match(/^BP[^A-Z]/)) return 'BP';
+  if (name.startsWith('GW_') || name.startsWith('GW ') || name.startsWith('GW-') || name.match(/^GW[^A-Z]/)) return 'GW';
+  if (name.startsWith('SR_') || name.startsWith('SR ') || name.startsWith('SR-') || name.match(/^SR[^A-Z]/)) return 'SR';
   return null;
 };
 
@@ -249,6 +251,7 @@ export default function App() {
   const handleSourceFilesSelect = (e) => {
     const files = Array.from(e.target.files || []);
     const newFiles = [];
+    const rejectedFiles = [];
 
     files.forEach((file) => {
       const category = categorizeFile(file.name);
@@ -265,11 +268,20 @@ export default function App() {
             error: null,
           });
         }
+      } else {
+        // Track files that couldn't be categorized
+        rejectedFiles.push(file.name);
       }
     });
 
     if (newFiles.length > 0) {
       setSourceFiles((prev) => [...prev, ...newFiles]);
+    }
+
+    // Show warning for rejected files
+    if (rejectedFiles.length > 0) {
+      setError(`ไม่สามารถจัดประเภทไฟล์ได้ ${rejectedFiles.length} ไฟล์: ${rejectedFiles.join(', ')} \nชื่อไฟล์ต้องขึ้นต้นด้วย BP_, BPK_, GW_, SR_ (หรือใช้ช่องว่างแทน _)`);
+    } else if (newFiles.length > 0) {
       setError(null);
     }
   };
@@ -378,6 +390,10 @@ export default function App() {
     if (mainWorkbook) {
       wb = mainWorkbook;
 
+      // Data column limit - only clear/write columns A to EJ (0-139)
+      // This preserves summary sections on the right side of the sheet
+      const DATA_COL_LIMIT = 139;
+
       // Update Daily sheets (BP Daily, BPK Daily, GW Daily, SR Daily)
       Object.entries(processedData).forEach(([sheetName, rows]) => {
         const ws = wb.Sheets[sheetName];
@@ -385,12 +401,14 @@ export default function App() {
 
         const dataStartRow = 14; // Data starts at row 14 (index 13)
 
-        // Clear old data first (rows 14 onwards)
+        // Clear old data in data columns only (preserve right side summary)
         const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-        for (let r = dataStartRow - 1; r <= range.e.r; r++) {
-          for (let c = 0; c <= range.e.c; c++) {
+        for (let r = dataStartRow - 1; r <= Math.min(range.e.r, dataStartRow + 100); r++) {
+          for (let c = 0; c <= Math.min(DATA_COL_LIMIT, range.e.c); c++) {
             const cellRef = XLSX.utils.encode_cell({ r, c });
-            delete ws[cellRef];
+            if (ws[cellRef]) {
+              delete ws[cellRef];
+            }
           }
         }
 
@@ -400,8 +418,9 @@ export default function App() {
 
           // If we have raw row data, use it to preserve all columns
           if (row.rawRow && row.colPositions) {
-            // Write raw row data
+            // Write raw row data (only up to DATA_COL_LIMIT)
             row.rawRow.forEach((val, colIdx) => {
+              if (colIdx > DATA_COL_LIMIT) return;
               const cellRef = XLSX.utils.encode_cell({ r: rowNum - 1, c: colIdx });
               if (val !== undefined && val !== null && val !== '') {
                 ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
@@ -426,7 +445,7 @@ export default function App() {
               }
             });
 
-            // Write N values at default positions
+            // Write N values at default positions (AN=39, BT=71, CZ=103, EF=135)
             const nPositions = [
               { col: 39, val: row.n },
               { col: 71, val: row.n1 },
@@ -440,23 +459,23 @@ export default function App() {
           }
         });
 
-        // Update sheet range
+        // Update sheet range (preserve original range if larger)
         const newRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
         newRange.e.r = Math.max(newRange.e.r, dataStartRow - 1 + rows.length);
         ws['!ref'] = XLSX.utils.encode_range(newRange);
       });
 
-      // Update Sheet2 (Summary/Pivot) if exists
+      // Update Sheet2 (Summary/Pivot) if exists - preserve existing structure
       if (summaryData && wb.Sheets['Sheet2']) {
         const ws = wb.Sheets['Sheet2'];
         const pivotStartRow = 4; // Pivot data typically starts at row 4
 
-        // Clear old pivot data
+        // Only clear columns A-E for pivot data
         const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-        for (let r = pivotStartRow - 1; r <= range.e.r; r++) {
-          for (let c = 0; c <= 5; c++) {
+        for (let r = pivotStartRow - 1; r <= Math.min(range.e.r, pivotStartRow + summaryData.length + 5); r++) {
+          for (let c = 0; c <= 4; c++) {
             const cellRef = XLSX.utils.encode_cell({ r, c });
-            delete ws[cellRef];
+            if (ws[cellRef]) delete ws[cellRef];
           }
         }
 
@@ -478,7 +497,7 @@ export default function App() {
           ws[cellRef] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
         });
 
-        // Update range
+        // Preserve original range
         const newRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
         newRange.e.r = Math.max(newRange.e.r, grandTotalRow);
         ws['!ref'] = XLSX.utils.encode_range(newRange);
