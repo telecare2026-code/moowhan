@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 // ==================== ICONS ====================
 const Icons = {
@@ -103,20 +103,14 @@ const categorizeFile = (filename) => {
 };
 
 // ==================== EXCEL FUNCTIONS ====================
-const readExcelFile = (file, preserveStyles = false) => {
+const readExcelFile = async (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
-        const data = new Uint8Array(e.target.result);
-        // Read with cellStyles option to preserve formatting
-        const options = { 
-          type: 'array',
-          cellStyles: preserveStyles,
-          cellNF: preserveStyles, // Number formats
-          cellDates: true,
-        };
-        const workbook = XLSX.read(data, options);
+        const buffer = e.target.result;
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(buffer);
         resolve(workbook);
       } catch (err) {
         reject(err);
@@ -128,16 +122,21 @@ const readExcelFile = (file, preserveStyles = false) => {
 };
 
 const extractDataFromSource = (workbook) => {
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) return [];
 
-  // Find header row (row 13, index 12)
-  const headerRowIndex = 12;
-  const dataStartIndex = 13;
+  // Find header row (row 13, 1-based)
+  const headerRowNumber = 13;
+  const dataStartRow = 14;
 
-  if (jsonData.length <= dataStartIndex) return [];
+  const headerRow = worksheet.getRow(headerRowNumber);
+  if (!headerRow) return [];
 
-  const headers = jsonData[headerRowIndex] || [];
+  const headers = [];
+  headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    headers[colNumber] = cell.value ? String(cell.value).trim() : '';
+  });
+
   const data = [];
 
   // Find N, N+1, N+2, N+3 total columns
@@ -146,7 +145,7 @@ const extractDataFromSource = (workbook) => {
     n2Col = -1,
     n3Col = -1;
   headers.forEach((h, i) => {
-    const val = String(h).trim().toUpperCase();
+    const val = String(h || '').trim().toUpperCase();
     if (val === 'N' && nCol === -1) nCol = i;
     else if (val === 'N+1' && n1Col === -1) n1Col = i;
     else if (val === 'N+2' && n2Col === -1) n2Col = i;
@@ -159,31 +158,39 @@ const extractDataFromSource = (workbook) => {
   if (n2Col === -1) n2Col = 103;
   if (n3Col === -1) n3Col = 135;
 
-  for (let i = dataStartIndex; i < jsonData.length; i++) {
-    const row = jsonData[i];
-    if (!row || !row[0] || row[0] === '<EOF>') continue;
+  // Extract data rows
+  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (rowNumber < dataStartRow) return;
 
-    const partNumber = String(row[0] || '').trim();
-    if (!partNumber || partNumber.length < 5) continue;
+    const partNumberCell = row.getCell(1);
+    const partNumber = partNumberCell.value ? String(partNumberCell.value).trim() : '';
+    
+    if (!partNumber || partNumber === '<EOF>' || partNumber.length < 5) return;
+
+    const rawRow = [];
+    row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      rawRow[colNumber] = cell.value;
+    });
 
     data.push({
       partNumber,
-      partCode: row[1] || '',
-      partDesc: row[2] || '',
-      suppCode: row[3] || '',
-      shippingDock: row[4] || '',
-      dockCode: row[5] || '',
-      carFamily: row[6] || '',
-      packingSize: row[7] || 0,
-      n: Number(row[nCol]) || 0,
-      n1: Number(row[n1Col]) || 0,
-      n2: Number(row[n2Col]) || 0,
-      n3: Number(row[n3Col]) || 0,
-      // Keep raw row data for template export (up to column 136)
-      rawRow: row.slice(0, Math.max(136, n3Col + 1)),
+      partCode: row.getCell(2).value || '',
+      partDesc: row.getCell(3).value || '',
+      suppCode: row.getCell(4).value || '',
+      shippingDock: row.getCell(5).value || '',
+      dockCode: row.getCell(6).value || '',
+      carFamily: row.getCell(7).value || '',
+      packingSize: row.getCell(8).value || 0,
+      n: Number(row.getCell(nCol + 1).value) || 0,
+      n1: Number(row.getCell(n1Col + 1).value) || 0,
+      n2: Number(row.getCell(n2Col + 1).value) || 0,
+      n3: Number(row.getCell(n3Col + 1).value) || 0,
+      // Keep raw row data and cell references for template export
+      rawRow,
+      rowNumber,
       colPositions: { nCol, n1Col, n2Col, n3Col },
     });
-  }
+  });
 
   return data;
 };
@@ -241,12 +248,12 @@ export default function App() {
     if (!file) return;
 
     try {
-      // Read with styles preserved for template
-      const workbook = await readExcelFile(file, true);
+      // Read with ExcelJS (preserves all formatting)
+      const workbook = await readExcelFile(file);
       setMainFile({
         name: file.name,
         size: file.size,
-        sheets: workbook.SheetNames,
+        sheets: workbook.worksheets.map((ws) => ws.name),
       });
       setMainWorkbook(workbook);
       setError(null);
@@ -386,172 +393,144 @@ export default function App() {
     setProcessing(false);
   };
 
-  // Helper: Update cell value while preserving style
-  const updateCell = (ws, row, col, value) => {
-    const cellRef = XLSX.utils.encode_cell({ r: row, c: col });
-    const existingCell = ws[cellRef];
-    
-    if (value === undefined || value === null || value === '') {
-      // Clear value but keep style if cell exists
-      if (existingCell) {
-        existingCell.v = '';
-        if (existingCell.w) delete existingCell.w; // Clear formatted text
-      }
-      return;
-    }
-
-    const cellType = typeof value === 'number' ? 'n' : 's';
-    
-    if (existingCell) {
-      // Preserve existing style, just update value
-      existingCell.v = value;
-      existingCell.t = cellType;
-      if (existingCell.w) delete existingCell.w; // Clear cached formatted text
-    } else {
-      // Create new cell
-      ws[cellRef] = { v: value, t: cellType };
-    }
-  };
-
-  // Helper: Copy cell style from template row
-  const copyCellStyle = (ws, fromRow, toRow, col) => {
-    const fromRef = XLSX.utils.encode_cell({ r: fromRow, c: col });
-    const toRef = XLSX.utils.encode_cell({ r: toRow, c: col });
-    const fromCell = ws[fromRef];
-    const toCell = ws[toRef];
-    
-    if (fromCell && fromCell.s && toCell) {
-      toCell.s = fromCell.s; // Copy style reference
-    }
-  };
-
-  // Export to Excel - either update template or create new file
-  const exportToExcel = () => {
+  // Export to Excel - either update template or create new file (using ExcelJS)
+  const exportToExcel = async () => {
     if (!processedData) return;
 
-    let wb;
+    let workbook;
     let fileName;
     const dateStr = new Date().toISOString().slice(0, 10);
 
     // ===== CASE 1: Update existing template (preserve formatting) =====
     if (mainWorkbook) {
-      wb = mainWorkbook;
+      workbook = mainWorkbook;
 
       // Update Daily sheets (BP Daily, BPK Daily, GW Daily, SR Daily)
       Object.entries(processedData).forEach(([sheetName, rows]) => {
-        const ws = wb.Sheets[sheetName];
-        if (!ws) return; // Sheet doesn't exist in template
+        const worksheet = workbook.getWorksheet(sheetName);
+        if (!worksheet) return; // Sheet doesn't exist in template
 
-        const dataStartRow = 14; // Data starts at row 14 (index 13, 0-based)
-        const templateRow = 13; // Row 14 in 0-based index (use as style template)
+        const dataStartRow = 14; // Data starts at row 14 (1-based)
+        const templateRowNumber = 14; // Use row 14 as style template
 
-        // Get original range
-        const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-        const maxDataCol = Math.min(139, range.e.c); // Limit to column EJ
+        // Get template row for style copying
+        const templateRow = worksheet.getRow(templateRowNumber);
 
-        // Clear old data rows (just values, preserve structure for cells that exist)
-        for (let r = dataStartRow - 1; r <= Math.min(range.e.r, dataStartRow + 100); r++) {
-          for (let c = 0; c <= maxDataCol; c++) {
-            const cellRef = XLSX.utils.encode_cell({ r, c });
-            if (ws[cellRef]) {
-              ws[cellRef].v = ''; // Clear value
-              if (ws[cellRef].w) delete ws[cellRef].w;
+        // Clear old data rows (just values, preserve styles)
+        const maxRows = Math.min(worksheet.rowCount, dataStartRow + 100);
+        for (let r = dataStartRow; r <= maxRows; r++) {
+          const row = worksheet.getRow(r);
+          // Clear values in data columns (A to EJ, column 1-139)
+          for (let c = 1; c <= 139; c++) {
+            const cell = row.getCell(c);
+            if (cell.value !== null && cell.value !== undefined) {
+              cell.value = null;
             }
           }
         }
 
         // Write new data starting at row 14
-        rows.forEach((row, idx) => {
-          const rowIdx = templateRow + idx; // 0-based row index
+        rows.forEach((rowData, idx) => {
+          const targetRowNumber = dataStartRow + idx;
+          const targetRow = worksheet.getRow(targetRowNumber);
 
-          // If we have raw row data, use it to preserve all columns
-          if (row.rawRow && row.colPositions) {
-            row.rawRow.forEach((val, colIdx) => {
-              if (colIdx > maxDataCol) return;
-              updateCell(ws, rowIdx, colIdx, val);
+          // Copy style from template row if available
+          if (templateRow && idx === 0) {
+            // First row: copy styles from template
+            templateRow.eachCell({ includeEmpty: false }, (templateCell, colNumber) => {
+              if (colNumber <= 139) {
+                const targetCell = targetRow.getCell(colNumber);
+                if (templateCell.style) {
+                  targetCell.style = JSON.parse(JSON.stringify(templateCell.style));
+                }
+              }
             });
-          } else {
-            // Write basic columns (A-H)
-            const basicData = [
-              row.partNumber,
-              row.partCode,
-              row.partDesc,
-              row.suppCode,
-              row.shippingDock,
-              row.dockCode,
-              row.carFamily,
-              row.packingSize,
-            ];
-            basicData.forEach((val, colIdx) => {
-              updateCell(ws, rowIdx, colIdx, val);
+          } else if (templateRow) {
+            // Subsequent rows: copy from previous row
+            const prevRow = worksheet.getRow(targetRowNumber - 1);
+            prevRow.eachCell({ includeEmpty: false }, (prevCell, colNumber) => {
+              if (colNumber <= 139) {
+                const targetCell = targetRow.getCell(colNumber);
+                if (prevCell.style) {
+                  targetCell.style = JSON.parse(JSON.stringify(prevCell.style));
+                }
+              }
             });
-
-            // Write N values at positions (AN=39, BT=71, CZ=103, EF=135)
-            updateCell(ws, rowIdx, 39, row.n);
-            updateCell(ws, rowIdx, 71, row.n1);
-            updateCell(ws, rowIdx, 103, row.n2);
-            updateCell(ws, rowIdx, 135, row.n3);
           }
-        });
 
-        // Update sheet range
-        const newRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-        newRange.e.r = Math.max(newRange.e.r, templateRow + rows.length - 1);
-        ws['!ref'] = XLSX.utils.encode_range(newRange);
+          // Write data values
+          targetRow.getCell(1).value = rowData.partNumber;
+          targetRow.getCell(2).value = rowData.partCode;
+          targetRow.getCell(3).value = rowData.partDesc;
+          targetRow.getCell(4).value = rowData.suppCode;
+          targetRow.getCell(5).value = rowData.shippingDock;
+          targetRow.getCell(6).value = rowData.dockCode;
+          targetRow.getCell(7).value = rowData.carFamily;
+          targetRow.getCell(8).value = rowData.packingSize;
+
+          // Write N values at positions (AN=40, BT=72, CZ=104, EF=136, 1-based)
+          targetRow.getCell(40).value = rowData.n;
+          targetRow.getCell(72).value = rowData.n1;
+          targetRow.getCell(104).value = rowData.n2;
+          targetRow.getCell(136).value = rowData.n3;
+
+          targetRow.commit();
+        });
       });
 
       // Update Sheet2 (Summary/Pivot) if exists
-      if (summaryData && wb.Sheets['Sheet2']) {
-        const ws = wb.Sheets['Sheet2'];
-        const pivotStartRow = 4; // Pivot data typically starts at row 4 (0-based: 3)
+      if (summaryData) {
+        const worksheet = workbook.getWorksheet('Sheet2');
+        if (worksheet) {
+          const pivotStartRow = 4; // Pivot data starts at row 4 (1-based)
 
-        // Clear old pivot values (preserve cells)
-        const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-        for (let r = pivotStartRow - 1; r <= Math.min(range.e.r, pivotStartRow + summaryData.length + 5); r++) {
-          for (let c = 0; c <= 4; c++) {
-            const cellRef = XLSX.utils.encode_cell({ r, c });
-            if (ws[cellRef]) {
-              ws[cellRef].v = '';
-              if (ws[cellRef].w) delete ws[cellRef].w;
+          // Clear old pivot values
+          for (let r = pivotStartRow; r <= pivotStartRow + summaryData.length + 5; r++) {
+            const row = worksheet.getRow(r);
+            for (let c = 1; c <= 5; c++) {
+              const cell = row.getCell(c);
+              if (cell.value !== null) {
+                cell.value = null;
+              }
             }
           }
+
+          // Write new summary data
+          summaryData.forEach((rowData, idx) => {
+            const row = worksheet.getRow(pivotStartRow + idx);
+            row.getCell(1).value = rowData.partNumber;
+            row.getCell(2).value = rowData.n;
+            row.getCell(3).value = rowData.n1;
+            row.getCell(4).value = rowData.n2;
+            row.getCell(5).value = rowData.n3;
+            row.commit();
+          });
+
+          // Add Grand Total
+          const grandTotalRow = worksheet.getRow(pivotStartRow + summaryData.length);
+          grandTotalRow.getCell(1).value = 'Grand Total';
+          grandTotalRow.getCell(2).value = totals.n;
+          grandTotalRow.getCell(3).value = totals.n1;
+          grandTotalRow.getCell(4).value = totals.n2;
+          grandTotalRow.getCell(5).value = totals.n3;
+          grandTotalRow.commit();
         }
-
-        // Write new summary data
-        summaryData.forEach((row, idx) => {
-          const rowIdx = pivotStartRow - 1 + idx;
-          updateCell(ws, rowIdx, 0, row.partNumber);
-          updateCell(ws, rowIdx, 1, row.n);
-          updateCell(ws, rowIdx, 2, row.n1);
-          updateCell(ws, rowIdx, 3, row.n2);
-          updateCell(ws, rowIdx, 4, row.n3);
-        });
-
-        // Add Grand Total
-        const grandTotalRowIdx = pivotStartRow - 1 + summaryData.length;
-        updateCell(ws, grandTotalRowIdx, 0, 'Grand Total');
-        updateCell(ws, grandTotalRowIdx, 1, totals.n);
-        updateCell(ws, grandTotalRowIdx, 2, totals.n1);
-        updateCell(ws, grandTotalRowIdx, 3, totals.n2);
-        updateCell(ws, grandTotalRowIdx, 4, totals.n3);
-
-        // Update range
-        const newRange = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-        newRange.e.r = Math.max(newRange.e.r, grandTotalRowIdx);
-        ws['!ref'] = XLSX.utils.encode_range(newRange);
       }
 
       fileName = `Production_Updated_${dateStr}.xlsx`;
     }
     // ===== CASE 2: Create new file from scratch =====
     else {
-      wb = XLSX.utils.book_new();
+      workbook = new ExcelJS.Workbook();
 
       // Daily sheets
       Object.entries(processedData).forEach(([sheetName, rows]) => {
         if (rows.length === 0) return;
 
-        const headers = [
+        const worksheet = workbook.addWorksheet(sheetName.replace(' ', '_'));
+
+        // Add headers
+        const headerRow = worksheet.addRow([
           'PART NUMBER',
           'PART CODE',
           'PART DESC',
@@ -564,11 +543,19 @@ export default function App() {
           'N+1',
           'N+2',
           'N+3',
-        ];
+        ]);
 
-        const wsData = [headers];
+        // Style header row
+        headerRow.font = { bold: true };
+        headerRow.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFE0E0E0' },
+        };
+
+        // Add data rows
         rows.forEach((row) => {
-          wsData.push([
+          worksheet.addRow([
             row.partNumber,
             row.partCode,
             row.partDesc,
@@ -583,18 +570,24 @@ export default function App() {
             row.n3,
           ]);
         });
-
-        const ws = XLSX.utils.aoa_to_sheet(wsData);
-        XLSX.utils.book_append_sheet(wb, ws, sheetName.replace(' ', '_'));
       });
 
       // Summary sheet
       if (summaryData) {
-        const summaryHeaders = ['Part Number', 'Plants', 'Sum of N', 'Sum of N+1', 'Sum of N+2', 'Sum of N+3', 'Total'];
-        const summaryRows = [summaryHeaders];
+        const worksheet = workbook.addWorksheet('Summary');
+        const headerRow = worksheet.addRow([
+          'Part Number',
+          'Plants',
+          'Sum of N',
+          'Sum of N+1',
+          'Sum of N+2',
+          'Sum of N+3',
+          'Total',
+        ]);
+        headerRow.font = { bold: true };
 
         summaryData.forEach((row) => {
-          summaryRows.push([
+          worksheet.addRow([
             row.partNumber,
             row.plants,
             row.n,
@@ -606,7 +599,7 @@ export default function App() {
         });
 
         // Grand Total
-        summaryRows.push([
+        const grandTotalRow = worksheet.addRow([
           'Grand Total',
           `${summaryData.length} Parts`,
           totals.n,
@@ -615,33 +608,42 @@ export default function App() {
           totals.n3,
           totals.n + totals.n1 + totals.n2 + totals.n3,
         ]);
-
-        const ws = XLSX.utils.aoa_to_sheet(summaryRows);
-        XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+        grandTotalRow.font = { bold: true };
       }
 
       // Verification sheet
       const missingPlantsExport = PLANTS.filter((p) => fileCounts[p] === 0);
-      const verificationData = [
-        ['Item', 'Status', 'Detail'],
-        ['ไฟล์หลัก (Template)', mainFile ? 'พร้อม' : 'ไม่มี (ไม่บังคับ)', mainFile?.name || '-'],
-        ['จำนวนไฟล์ทั้งหมด', totalSourceFiles > 0 ? 'พร้อม' : 'ไม่พบ', `${totalSourceFiles} ไฟล์`],
-        ['โรงงานที่มีไฟล์', '', PLANTS.filter((p) => fileCounts[p] > 0).join(', ') || '-'],
-        ['โรงงานที่ไม่มีไฟล์', missingPlantsExport.length > 0 ? 'ขาด' : 'ครบ', missingPlantsExport.join(', ') || '-'],
-      ];
+      const verifyWorksheet = workbook.addWorksheet('Verification');
+      verifyWorksheet.addRow(['Item', 'Status', 'Detail']);
+      verifyWorksheet.addRow(['ไฟล์หลัก (Template)', mainFile ? 'พร้อม' : 'ไม่มี (ไม่บังคับ)', mainFile?.name || '-']);
+      verifyWorksheet.addRow(['จำนวนไฟล์ทั้งหมด', totalSourceFiles > 0 ? 'พร้อม' : 'ไม่พบ', `${totalSourceFiles} ไฟล์`]);
+      verifyWorksheet.addRow(['โรงงานที่มีไฟล์', '', PLANTS.filter((p) => fileCounts[p] > 0).join(', ') || '-']);
+      verifyWorksheet.addRow(['โรงงานที่ไม่มีไฟล์', missingPlantsExport.length > 0 ? 'ขาด' : 'ครบ', missingPlantsExport.join(', ') || '-']);
 
       PLANTS.forEach((p) => {
-        verificationData.push([`ไฟล์ ${p}`, fileCounts[p] > 0 ? 'พร้อม' : 'ไม่พบ', `${fileCounts[p]} ไฟล์`]);
+        verifyWorksheet.addRow([`ไฟล์ ${p}`, fileCounts[p] > 0 ? 'พร้อม' : 'ไม่พบ', `${fileCounts[p]} ไฟล์`]);
       });
-
-      const wsVerify = XLSX.utils.aoa_to_sheet(verificationData);
-      XLSX.utils.book_append_sheet(wb, wsVerify, 'Verification');
 
       fileName = `Production_Summary_${dateStr}.xlsx`;
     }
 
     // Download the file
-    XLSX.writeFile(wb, fileName);
+    try {
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError('เกิดข้อผิดพลาดในการดาวน์โหลดไฟล์: ' + err.message);
+    }
   };
 
   // Toggle section
