@@ -205,6 +205,14 @@ const extractDataFromSourceXLSX = (workbook) => {
     const partNumber = String(row[0] || '').trim();
     if (!partNumber || partNumber.length < 5) continue;
 
+    // Store ALL columns from the row (preserve complete data)
+    // Find the last column with data
+    let lastCol = row.length - 1;
+    while (lastCol >= 0 && (row[lastCol] === undefined || row[lastCol] === null || row[lastCol] === '')) {
+      lastCol--;
+    }
+    const maxCol = Math.max(lastCol + 1, 200); // Store at least 200 columns or all data
+
     data.push({
       partNumber,
       partCode: row[1] || '',
@@ -218,7 +226,8 @@ const extractDataFromSourceXLSX = (workbook) => {
       n1: Number(row[n1Col]) || 0,
       n2: Number(row[n2Col]) || 0,
       n3: Number(row[n3Col]) || 0,
-      rawRow: row.slice(0, Math.max(136, n3Col + 1)),
+      // Store ALL columns - preserve complete row data including dates, formulas, etc.
+      rawRow: row.slice(0, maxCol),
       colPositions: { nCol, n1Col, n2Col, n3Col },
     });
   }
@@ -267,10 +276,18 @@ const extractDataFromSourceExcelJS = (workbook) => {
     
     if (!partNumber || partNumber === '<EOF>' || partNumber.length < 5) return;
 
+    // Store ALL columns - find the maximum column with data
     const rawRow = [];
-    row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-      rawRow[colNumber] = cell.value;
-    });
+    let maxCol = 0;
+    
+    // Get all cells including empty ones up to a reasonable limit (200 columns)
+    for (let colNum = 1; colNum <= 200; colNum++) {
+      const cell = row.getCell(colNum);
+      if (cell.value !== null && cell.value !== undefined) {
+        rawRow[colNum] = cell.value;
+        maxCol = Math.max(maxCol, colNum);
+      }
+    }
 
     data.push({
       partNumber,
@@ -285,6 +302,7 @@ const extractDataFromSourceExcelJS = (workbook) => {
       n1: Number(row.getCell(n1Col + 1).value) || 0,
       n2: Number(row.getCell(n2Col + 1).value) || 0,
       n3: Number(row.getCell(n3Col + 1).value) || 0,
+      // Store complete row data - preserve ALL columns including dates, formulas, etc.
       rawRow,
       rowNumber,
       colPositions: { nCol, n1Col, n2Col, n3Col },
@@ -535,8 +553,8 @@ export default function App() {
         const maxRows = Math.min(worksheet.rowCount, dataStartRow + 100);
         for (let r = dataStartRow; r <= maxRows; r++) {
           const row = worksheet.getRow(r);
-          // Clear values in data columns (A to EJ, column 1-139)
-          for (let c = 1; c <= 139; c++) {
+          // Clear values in data columns (up to column 200 to cover all data)
+          for (let c = 1; c <= 200; c++) {
             const cell = row.getCell(c);
             if (cell.value !== null && cell.value !== undefined) {
               cell.value = null;
@@ -553,18 +571,18 @@ export default function App() {
           if (templateRow && idx === 0) {
             // First row: copy styles from template
             templateRow.eachCell({ includeEmpty: false }, (templateCell, colNumber) => {
-              if (colNumber <= 139) {
+              if (colNumber <= 200) {
                 const targetCell = targetRow.getCell(colNumber);
                 if (templateCell.style) {
                   targetCell.style = JSON.parse(JSON.stringify(templateCell.style));
                 }
               }
             });
-          } else if (templateRow) {
+          } else if (templateRow && idx > 0) {
             // Subsequent rows: copy from previous row
             const prevRow = worksheet.getRow(targetRowNumber - 1);
             prevRow.eachCell({ includeEmpty: false }, (prevCell, colNumber) => {
-              if (colNumber <= 139) {
+              if (colNumber <= 200) {
                 const targetCell = targetRow.getCell(colNumber);
                 if (prevCell.style) {
                   targetCell.style = JSON.parse(JSON.stringify(prevCell.style));
@@ -573,21 +591,57 @@ export default function App() {
             });
           }
 
-          // Write data values
-          targetRow.getCell(1).value = rowData.partNumber;
-          targetRow.getCell(2).value = rowData.partCode;
-          targetRow.getCell(3).value = rowData.partDesc;
-          targetRow.getCell(4).value = rowData.suppCode;
-          targetRow.getCell(5).value = rowData.shippingDock;
-          targetRow.getCell(6).value = rowData.dockCode;
-          targetRow.getCell(7).value = rowData.carFamily;
-          targetRow.getCell(8).value = rowData.packingSize;
+          // Write ALL columns from rawRow (preserve complete data including dates, formulas, etc.)
+          if (rowData.rawRow) {
+            // rawRow can be array (0-based) or object (1-based colNumber keys)
+            if (Array.isArray(rowData.rawRow)) {
+              // Array format: 0-based index
+              rowData.rawRow.forEach((value, colIndex) => {
+                const colNumber = colIndex + 1; // Convert to 1-based
+                if (colNumber <= 200 && (value !== undefined && value !== null && value !== '')) {
+                  const cell = targetRow.getCell(colNumber);
+                  cell.value = value;
+                }
+              });
+            } else {
+              // Object format: 1-based colNumber keys (from ExcelJS)
+              Object.keys(rowData.rawRow).forEach((colKey) => {
+                const colNumber = parseInt(colKey, 10);
+                if (colNumber <= 200 && colNumber >= 1) {
+                  const value = rowData.rawRow[colNumber];
+                  if (value !== undefined && value !== null && value !== '') {
+                    const cell = targetRow.getCell(colNumber);
+                    cell.value = value;
+                  }
+                }
+              });
+            }
+          } else {
+            // Fallback: write basic columns if rawRow not available
+            targetRow.getCell(1).value = rowData.partNumber;
+            targetRow.getCell(2).value = rowData.partCode;
+            targetRow.getCell(3).value = rowData.partDesc;
+            targetRow.getCell(4).value = rowData.suppCode;
+            targetRow.getCell(5).value = rowData.shippingDock;
+            targetRow.getCell(6).value = rowData.dockCode;
+            targetRow.getCell(7).value = rowData.carFamily;
+            targetRow.getCell(8).value = rowData.packingSize;
 
-          // Write N values at positions (AN=40, BT=72, CZ=104, EF=136, 1-based)
-          targetRow.getCell(40).value = rowData.n;
-          targetRow.getCell(72).value = rowData.n1;
-          targetRow.getCell(104).value = rowData.n2;
-          targetRow.getCell(136).value = rowData.n3;
+            // Write N values at positions (AN=40, BT=72, CZ=104, EF=136, 1-based)
+            if (rowData.colPositions) {
+              const { nCol, n1Col, n2Col, n3Col } = rowData.colPositions;
+              targetRow.getCell(nCol + 1).value = rowData.n;
+              targetRow.getCell(n1Col + 1).value = rowData.n1;
+              targetRow.getCell(n2Col + 1).value = rowData.n2;
+              targetRow.getCell(n3Col + 1).value = rowData.n3;
+            } else {
+              // Default positions
+              targetRow.getCell(40).value = rowData.n;
+              targetRow.getCell(72).value = rowData.n1;
+              targetRow.getCell(104).value = rowData.n2;
+              targetRow.getCell(136).value = rowData.n3;
+            }
+          }
 
           targetRow.commit();
         });
