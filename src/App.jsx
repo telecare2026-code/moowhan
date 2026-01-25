@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import * as XLSX from 'xlsx';
 
 const Icons = {
   Upload: () => (
@@ -97,6 +98,8 @@ export default function App() {
 
   const totalFiles = Object.values(sourceFiles).reduce((sum, files) => sum + files.length, 0);
   const canProcess = Boolean(mainFile) && totalFiles > 0 && !processing;
+  const plantList = Object.keys(plantMeta);
+  const missingPlants = plantList.filter((plant) => sourceFiles[plant].length === 0);
 
   const resetAll = () => {
     setTab('upload');
@@ -165,6 +168,83 @@ export default function App() {
         n3: Object.values(summary).reduce((sum, row) => sum + row.n3, 0),
       }
     : { n: 0, n1: 0, n2: 0, n3: 0 };
+
+  const partPlantMap = processed
+    ? Object.entries(mockData).reduce((acc, [sheet, rows]) => {
+        const plant = sheet.split(' ')[0];
+        rows.forEach((row) => {
+          if (!acc[row.part]) acc[row.part] = new Set();
+          acc[row.part].add(plant);
+        });
+        return acc;
+      }, {})
+    : {};
+
+  const duplicateParts = Object.keys(partPlantMap).filter((part) => partPlantMap[part].size > 1);
+
+  const buildSheet = (rows) =>
+    rows.length > 0 ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.aoa_to_sheet([['No data']]);
+
+  const handleDownload = () => {
+    if (!processed) return;
+
+    const summaryRows = Object.entries(summary).map(([part, data]) => ({
+      PartNumber: part,
+      N: data.n,
+      N1: data.n1,
+      N2: data.n2,
+      N3: data.n3,
+      Total: data.n + data.n1 + data.n2 + data.n3,
+    }));
+
+    const verificationRows = [
+      {
+        Item: 'ไฟล์หลัก',
+        Status: mainFile ? 'พร้อม' : 'ไม่พบ',
+        Detail: mainFile?.name || '-',
+      },
+      {
+        Item: 'จำนวนไฟล์รวม',
+        Status: totalFiles > 0 ? 'พร้อม' : 'ไม่พบ',
+        Detail: `${totalFiles} ไฟล์`,
+      },
+      {
+        Item: 'โรงงานที่ไม่มีไฟล์',
+        Status: missingPlants.length > 0 ? 'พบ' : 'ครบ',
+        Detail: missingPlants.length > 0 ? missingPlants.join(', ') : '-',
+      },
+      {
+        Item: 'Part ที่ซ้ำหลายโรงงาน',
+        Status: duplicateParts.length > 0 ? 'พบ' : 'ไม่พบ',
+        Detail: duplicateParts.length > 0 ? `${duplicateParts.length} รายการ` : '-',
+      },
+    ];
+
+    const duplicateRows = duplicateParts.map((part) => ({
+      PartNumber: part,
+      Plants: Array.from(partPlantMap[part]).join(', '),
+    }));
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, buildSheet(summaryRows), 'Summary');
+    XLSX.utils.book_append_sheet(workbook, buildSheet(verificationRows), 'Verification');
+    XLSX.utils.book_append_sheet(workbook, buildSheet(duplicateRows), 'DuplicateParts');
+
+    Object.entries(mockData).forEach(([sheet, rows]) => {
+      const sheetRows = rows.map((row) => ({
+        PartNumber: row.part,
+        PartCode: row.code,
+        PackingSize: row.pack,
+        N: row.n,
+        N1: row.n1,
+        N2: row.n2,
+        N3: row.n3,
+      }));
+      XLSX.utils.book_append_sheet(workbook, buildSheet(sheetRows), sheet.replace(' ', '_'));
+    });
+
+    XLSX.writeFile(workbook, 'production-consolidated.xlsx');
+  };
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
@@ -334,7 +414,47 @@ export default function App() {
         )}
 
         {tab === 'preview' && processed && (
-          <div className="space-y-3">
+          <div className="space-y-4">
+            <div className="bg-white border border-slate-200 rounded-xl p-4">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h3 className="text-base font-semibold">ตรวจสอบข้อมูลเบื้องต้น</h3>
+                  <p className="text-sm text-slate-500">เช็คไฟล์ที่อัปโหลดและข้อมูลซ้ำก่อนสรุปผล</p>
+                </div>
+                <button
+                  onClick={handleDownload}
+                  className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  ดาวน์โหลดไฟล์สรุป
+                </button>
+              </div>
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                <div className="border border-slate-200 rounded-lg p-3">
+                  <p className="text-slate-500">ไฟล์หลัก</p>
+                  <p className={`font-semibold ${mainFile ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {mainFile ? 'พร้อม' : 'ไม่พบ'}
+                  </p>
+                  <p className="text-xs text-slate-400">{mainFile?.name || '-'}</p>
+                </div>
+                <div className="border border-slate-200 rounded-lg p-3">
+                  <p className="text-slate-500">ไฟล์รวมทั้งหมด</p>
+                  <p className={`font-semibold ${totalFiles > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {totalFiles > 0 ? `${totalFiles} ไฟล์` : 'ไม่พบไฟล์'}
+                  </p>
+                  <p className="text-xs text-slate-400">ครอบคลุม {plantList.length - missingPlants.length} โรงงาน</p>
+                </div>
+                <div className="border border-slate-200 rounded-lg p-3">
+                  <p className="text-slate-500">ข้อมูลซ้ำหลายโรงงาน</p>
+                  <p className={`font-semibold ${duplicateParts.length > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                    {duplicateParts.length > 0 ? `${duplicateParts.length} รายการ` : 'ไม่พบ'}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    {missingPlants.length > 0 ? `ยังขาด: ${missingPlants.join(', ')}` : 'ครบทุกโรงงาน'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
             {Object.entries(mockData).map(([sheet, rows]) => (
               <div key={sheet} className="bg-white border border-slate-200 rounded-xl overflow-hidden">
                 <button
@@ -450,6 +570,13 @@ export default function App() {
                 </table>
               </div>
             </div>
+
+            <button
+              onClick={handleDownload}
+              className="w-full py-4 rounded-xl font-semibold bg-blue-600 text-white hover:bg-blue-700"
+            >
+              ดาวน์โหลดไฟล์สรุปรวม (Excel)
+            </button>
           </div>
         )}
 
