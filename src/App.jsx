@@ -176,31 +176,54 @@ const extractDataFromSourceXLSX = (workbook) => {
 
   const norm = (v) => String(v ?? '').trim().toUpperCase();
   const MONTHS = new Set(['DEC', 'JAN', 'FEB', 'MAR']);
+  
+  // ===== ROBUST SOURCE HEADER DETECTION =====
   const buildSourceMonthDayMap = () => {
     const maxScan = Math.min(30, jsonData.length);
 
-    const hasMonth = (row) => (row || []).some((cell) => MONTHS.has(norm(cell)));
-    const hasSub = (row) => {
-      const cells = (row || []).map(norm);
-      return cells.includes('N') || cells.includes('N+1') || cells.includes('N+2') || cells.includes('N+3') || cells.includes('1');
+    // Score-based detection for month row
+    const scoreMonthRow = (row) => {
+      if (!row) return 0;
+      let score = 0;
+      for (const cell of row) {
+        if (MONTHS.has(norm(cell))) score += 10;
+      }
+      return score;
     };
 
+    // Score-based detection for subheader row
+    const scoreSubRow = (row) => {
+      if (!row) return 0;
+      let score = 0;
+      const cells = row.map(norm);
+      for (const cell of cells) {
+        if (cell === 'N' || cell === 'N+1' || cell === 'N+2' || cell === 'N+3') score += 5;
+        if (/^[0-9]{1,2}$/.test(cell) && Number(cell) >= 1 && Number(cell) <= 31) score += 1;
+      }
+      return score;
+    };
+
+    // Find best month row
     let monthRowIdx = -1;
+    let bestMonthScore = 0;
     for (let r = 0; r < maxScan; r++) {
-      if (hasMonth(jsonData[r])) {
+      const score = scoreMonthRow(jsonData[r]);
+      if (score > bestMonthScore) {
+        bestMonthScore = score;
         monthRowIdx = r;
-        break;
       }
     }
 
-    // Subheader row usually right below the month row
+    // Find best subheader row (prefer rows near month row)
     let subRowIdx = -1;
-    if (monthRowIdx >= 0) {
-      for (let r = monthRowIdx + 1; r < maxScan; r++) {
-        if (hasSub(jsonData[r])) {
-          subRowIdx = r;
-          break;
-        }
+    let bestSubScore = 0;
+    const searchStart = monthRowIdx >= 0 ? monthRowIdx : 0;
+    const searchEnd = Math.min(searchStart + 5, maxScan);
+    for (let r = searchStart; r < searchEnd; r++) {
+      const score = scoreSubRow(jsonData[r]);
+      if (score > bestSubScore) {
+        bestSubScore = score;
+        subRowIdx = r;
       }
     }
 
@@ -212,25 +235,39 @@ const extractDataFromSourceXLSX = (workbook) => {
     const subRow = jsonData[subRowIdx] || [];
     const maxLen = Math.max(monthRow.length, subRow.length, 200);
 
+    // Build map with forward-fill for merged cells
     const map = {};
     let currentMonth = '';
     for (let c = 0; c < maxLen; c++) {
       const m = norm(monthRow[c]);
-      if (MONTHS.has(m)) currentMonth = m;
+      // Forward-fill: keep current month if cell is empty (merged)
+      if (MONTHS.has(m)) {
+        currentMonth = m;
+      }
+      
       const subRaw = subRow[c];
       const sub = norm(subRaw);
       if (!currentMonth) continue;
       if (!sub) continue;
+      
       // Accept N / N+1 / N+2 / N+3 or day numbers 1..31
       const isDay = /^[0-9]{1,2}$/.test(sub) && Number(sub) >= 1 && Number(sub) <= 31;
       const isN = sub === 'N' || sub === 'N+1' || sub === 'N+2' || sub === 'N+3';
       if (!isDay && !isN) continue;
+      
       map[`${currentMonth}|${sub}`] = c; // 0-based column in rawRow
     }
-    return map;
+    
+    return { map, monthRowIdx, subRowIdx };
   };
 
-  const sourceMap = buildSourceMonthDayMap();
+  const { map: sourceMap, monthRowIdx, subRowIdx } = buildSourceMonthDayMap();
+
+  // Log diagnostics for header detection
+  console.log(`Source file header detection: Month row=${monthRowIdx}, Sub row=${subRowIdx}, Keys found=${Object.keys(sourceMap).length}`);
+  if (Object.keys(sourceMap).length < 50) {
+    console.warn(`⚠️ Warning: Only ${Object.keys(sourceMap).length} columns detected. Expected ~140+ for full month/day coverage.`);
+  }
 
   const headerRowIndex = 12; // Row 13 (0-based)
   const dataStartIndex = 13; // Row 14 (0-based)
@@ -287,7 +324,7 @@ const extractDataFromSourceXLSX = (workbook) => {
       // Store ALL columns - preserve complete row data including dates, formulas, etc.
       rawRow: row.slice(0, maxCol),
       colPositions: { nCol, n1Col, n2Col, n3Col },
-      sourceMap,
+      sourceMap, // Share the same sourceMap for all rows from this file
     });
   }
 
@@ -382,6 +419,7 @@ export default function App() {
   const [summaryData, setSummaryData] = useState(null);
   const [expanded, setExpanded] = useState({});
   const [error, setError] = useState(null);
+  const [diagnostics, setDiagnostics] = useState(null);
 
   // Counts per plant
   const fileCounts = PLANTS.reduce((acc, p) => {
@@ -416,6 +454,7 @@ export default function App() {
     setSummaryData(null);
     setExpanded({});
     setError(null);
+    setDiagnostics(null);
   };
 
   // Handle main file upload
@@ -513,6 +552,9 @@ export default function App() {
       // Process each source file
       const updatedFiles = [...sourceFiles];
 
+      // Track diagnostics
+      const fileDiagnostics = [];
+
       for (let i = 0; i < updatedFiles.length; i++) {
         const fileInfo = updatedFiles[i];
 
@@ -530,6 +572,18 @@ export default function App() {
             data[sheetName].push(...extracted);
           }
 
+          // Collect diagnostics from first row
+          if (extracted.length > 0 && extracted[0].sourceMap) {
+            const sourceKeys = Object.keys(extracted[0].sourceMap);
+            fileDiagnostics.push({
+              file: fileInfo.name,
+              category: fileInfo.category,
+              rowCount: extracted.length,
+              keysFound: sourceKeys.length,
+              sampleKeys: sourceKeys.slice(0, 10),
+            });
+          }
+
           // Update status to done
           updatedFiles[i] = { ...fileInfo, status: 'done', rowCount: extracted.length };
           setSourceFiles([...updatedFiles]);
@@ -538,6 +592,8 @@ export default function App() {
           setSourceFiles([...updatedFiles]);
         }
       }
+
+      setDiagnostics({ files: fileDiagnostics });
 
       setProcessedData(data);
 
@@ -838,11 +894,12 @@ export default function App() {
           return a.partNumber.localeCompare(b.partNumber);
         });
 
-        // Build destination map from Analyze headers (Row 1: month merged, Row 2: subheader)
+        // ===== ROBUST ANALYZE HEADER DETECTION =====
         const normText = (v) => String(v ?? '').trim().toUpperCase();
         const MONTHS = new Set(['DEC', 'JAN', 'FEB', 'MAR']);
         const getCellText = (cell) => {
           let v = cell?.value;
+          // Handle merged cells: use master cell value
           if ((v === null || v === undefined || v === '') && cell?.master) v = cell.master.value;
           if (v === null || v === undefined) return '';
           if (typeof v === 'object') {
@@ -859,15 +916,52 @@ export default function App() {
         const headerSubRow = analyzeSheet.getRow(2);
         let currentMonth = '';
         const maxColsScan = 220;
+        
+        // Build destination map with forward-fill for merged cells
         for (let col = 1; col <= maxColsScan; col++) {
           const m = normText(getCellText(headerMonthRow.getCell(col)));
-          if (MONTHS.has(m)) currentMonth = m;
+          // Forward-fill: keep current month if cell is empty (merged)
+          if (MONTHS.has(m)) {
+            currentMonth = m;
+          }
+          
           const sub = normText(getCellText(headerSubRow.getCell(col)));
           if (!currentMonth || !sub) continue;
+          
           const isDay = /^[0-9]{1,2}$/.test(sub) && Number(sub) >= 1 && Number(sub) <= 31;
           const isN = sub === 'N' || sub === 'N+1' || sub === 'N+2' || sub === 'N+3';
           if (!isDay && !isN) continue;
+          
           analyzeDestMap[`${currentMonth}|${sub}`] = col; // 1-based column number in Analyze
+        }
+
+        // ===== DIAGNOSTICS: Check mapping coverage =====
+        const allSourceKeys = new Set();
+        analyzeRows.forEach(row => {
+          if (row.sourceMap) {
+            Object.keys(row.sourceMap).forEach(key => allSourceKeys.add(key));
+          }
+        });
+        
+        const analyzeKeys = new Set(Object.keys(analyzeDestMap));
+        const missingInAnalyze = [...allSourceKeys].filter(k => !analyzeKeys.has(k));
+        const missingInSource = [...analyzeKeys].filter(k => !allSourceKeys.has(k));
+        
+        console.log('=== ANALYZE MAPPING DIAGNOSTICS ===');
+        console.log(`Analyze requires ${analyzeKeys.size} keys (columns)`);
+        console.log(`Source provides ${allSourceKeys.size} keys (columns)`);
+        console.log(`Missing in Analyze template: ${missingInAnalyze.length} keys`, missingInAnalyze.slice(0, 10));
+        console.log(`Missing in Source files: ${missingInSource.length} keys`, missingInSource.slice(0, 10));
+        console.log(`Matched keys: ${[...analyzeKeys].filter(k => allSourceKeys.has(k)).length}`);
+        
+        // Show sample of matched keys
+        const matchedSample = [...analyzeKeys].filter(k => allSourceKeys.has(k)).slice(0, 20);
+        console.log('Sample matched keys:', matchedSample);
+        
+        // Warning if too many missing keys
+        if (missingInSource.length > analyzeKeys.size * 0.5) {
+          console.warn(`⚠️ WARNING: More than 50% of Analyze columns are missing in source files!`);
+          console.warn(`This may indicate header detection failed. Check source file structure.`);
         }
 
         const destColsToClear = new Set([
@@ -914,19 +1008,35 @@ export default function App() {
 
           [cellA, cellB, cellC, cellD, cellE, cellF, cellG, cellH, cellI, cellRef].forEach(applyHighlight);
 
+          // ===== COPY MONTH/DAY VALUES BY KEY-TO-KEY MAPPING =====
           const srcMap = rowData.sourceMap || {};
-          // Copy every month/day value by key-to-key mapping
+          let copiedCount = 0;
+          let skippedCount = 0;
+          
           Object.entries(analyzeDestMap).forEach(([key, destCol]) => {
             const srcCol = srcMap[key];
-            if (srcCol === undefined || srcCol === null) return;
+            if (srcCol === undefined || srcCol === null) {
+              skippedCount++;
+              return;
+            }
+            
             const value = Array.isArray(rowData.rawRow) ? rowData.rawRow[srcCol] : undefined;
             const cell = row.getCell(destCol);
-            safeSetCellValue(cell, value);
-            // Only highlight when we actually set a value
-            if (cell.value !== null && cell.value !== undefined && cell.value !== '') {
+            
+            // Only set if value exists and is not empty
+            if (value !== undefined && value !== null && value !== '') {
+              safeSetCellValue(cell, value);
               applyHighlight(cell);
+              copiedCount++;
+            } else {
+              skippedCount++;
             }
           });
+          
+          // Log diagnostics for first few rows
+          if (idx < 3) {
+            console.log(`Row ${idx + 1} (${rowData.plant} ${rowData.partNumber}): Copied ${copiedCount}/${Object.keys(analyzeDestMap).length} columns, Skipped ${skippedCount}`);
+          }
 
           row.commit();
         });
@@ -1380,6 +1490,47 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* Diagnostics Card */}
+            {diagnostics && diagnostics.files && diagnostics.files.length > 0 && (
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-5 h-5 text-blue-600">
+                    <Icons.Chart />
+                  </span>
+                  <h3 className="text-lg font-semibold text-blue-900">Diagnostics: การตรวจจับ Header</h3>
+                </div>
+                <p className="text-sm text-blue-700 mb-3">
+                  ระบบตรวจจับคอลัมน์เดือน/วัน (Dec/Jan/Feb/Mar + 1-31) จากไฟล์ source อัตโนมัติ
+                </p>
+                <div className="space-y-2">
+                  {diagnostics.files.map((diag, idx) => (
+                    <div key={idx} className="bg-white rounded-lg p-3 text-sm">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-medium text-slate-700">{diag.file}</span>
+                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${PLANT_META[diag.category]?.badge || ''}`}>
+                          {diag.category}
+                        </span>
+                      </div>
+                      <div className="text-slate-600">
+                        <span className="font-semibold text-emerald-600">{diag.keysFound}</span> คอลัมน์ตรวจพบ
+                        {' • '}
+                        <span className="text-slate-500">{diag.rowCount} แถว</span>
+                      </div>
+                      {diag.sampleKeys && diag.sampleKeys.length > 0 && (
+                        <div className="mt-1 text-xs text-slate-400">
+                          ตัวอย่าง: {diag.sampleKeys.slice(0, 5).join(', ')}...
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 p-3 bg-blue-100 rounded-lg text-xs text-blue-800">
+                  💡 <strong>หมายเหตุ:</strong> ถ้าจำนวนคอลัมน์ที่ตรวจพบน้อยกว่าที่คาดหวัง (เช่น {'<'} 100) 
+                  อาจเป็นเพราะไฟล์ source มีโครงสร้าง header ที่แตกต่าง กรุณาตรวจสอบ Console สำหรับรายละเอียดเพิ่มเติม
+                </div>
+              </div>
+            )}
 
             {/* Data by Plant */}
             {Object.entries(processedData).map(([sheet, rows]) => {
