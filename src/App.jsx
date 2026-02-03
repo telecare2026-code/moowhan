@@ -777,19 +777,27 @@ export default function App() {
         console.log(`=== ANALYZE SHEET ===`);
         console.log(`Total rows to write: ${analyzeRows.length}`);
 
-        // Clear old data (columns A-M = 1-13)
+        // Clear old data in columns we will write to:
+        // Basic info: A-I (1-9)
+        // N values: AO=41, BU=73, DA=105, EG=137
+        const colsToClear = [1, 2, 3, 4, 5, 6, 7, 8, 9, 41, 73, 105, 137];
         const clearEndRow = analyzeStartRow + Math.max(analyzeRows.length, 100) + 5;
         for (let r = analyzeStartRow; r <= clearEndRow; r++) {
           const row = analyzeSheet.getRow(r);
-          for (let c = 1; c <= 13; c++) {
+          for (const c of colsToClear) {
             safeClearCell(row.getCell(c));
           }
         }
 
         // Write rows to Analyze sheet
-        // Columns: A=Plant, B=PartNumber, C=PartCode, D=PartDesc, E=SuppCode, 
-        //          F=ShippingDock, G=DockCode, H=CarFamily, I=PackingSize, 
-        //          J=N, K=N+1, L=N+2, M=N+3
+        // Basic info columns: A=Plant, B=PartNumber, C=PartCode, D=PartDesc, E=SuppCode,
+        //                     F=ShippingDock, G=DockCode, H=CarFamily, I=PackingSize
+        // N columns in Analyze: AO=41, BU=73, DA=105, EG=137 (1-based)
+        const ANALYZE_N_COL = 41;   // AO
+        const ANALYZE_N1_COL = 73;  // BU
+        const ANALYZE_N2_COL = 105; // DA
+        const ANALYZE_N3_COL = 137; // EG
+
         analyzeRows.forEach((rowData, idx) => {
           const row = analyzeSheet.getRow(analyzeStartRow + idx);
 
@@ -838,31 +846,31 @@ export default function App() {
           safeSetCellValue(cellI, rowData.packingSize);
           applyHighlight(cellI);
 
-          // Column J: N
-          const cellJ = row.getCell(10);
-          safeSetCellValue(cellJ, rowData.n);
-          applyHighlight(cellJ);
+          // Column AO (41): N
+          const cellN = row.getCell(ANALYZE_N_COL);
+          safeSetCellValue(cellN, rowData.n);
+          applyHighlight(cellN);
 
-          // Column K: N+1
-          const cellK = row.getCell(11);
-          safeSetCellValue(cellK, rowData.n1);
-          applyHighlight(cellK);
+          // Column BU (73): N+1
+          const cellN1 = row.getCell(ANALYZE_N1_COL);
+          safeSetCellValue(cellN1, rowData.n1);
+          applyHighlight(cellN1);
 
-          // Column L: N+2
-          const cellL = row.getCell(12);
-          safeSetCellValue(cellL, rowData.n2);
-          applyHighlight(cellL);
+          // Column DA (105): N+2
+          const cellN2 = row.getCell(ANALYZE_N2_COL);
+          safeSetCellValue(cellN2, rowData.n2);
+          applyHighlight(cellN2);
 
-          // Column M: N+3
-          const cellM = row.getCell(13);
-          safeSetCellValue(cellM, rowData.n3);
-          applyHighlight(cellM);
+          // Column EG (137): N+3
+          const cellN3 = row.getCell(ANALYZE_N3_COL);
+          safeSetCellValue(cellN3, rowData.n3);
+          applyHighlight(cellN3);
 
           row.commit();
 
           // Log first 3 rows for verification
           if (idx < 3) {
-            console.log(`Row ${idx + 1}: ${rowData.plant} | ${rowData.partNumber} | N=${rowData.n} | N+1=${rowData.n1} | N+2=${rowData.n2} | N+3=${rowData.n3}`);
+            console.log(`Row ${idx + 1}: ${rowData.plant} | ${rowData.partNumber} | N(AO)=${rowData.n} | N+1(BU)=${rowData.n1} | N+2(DA)=${rowData.n2} | N+3(EG)=${rowData.n3}`);
           }
         });
 
