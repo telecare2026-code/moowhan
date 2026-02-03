@@ -784,43 +784,21 @@ export default function App() {
         console.log(`=== ANALYZE SHEET ===`);
         console.log(`Total rows to write: ${analyzeRows.length}`);
 
-        // ===== COLUMN MAPPING =====
-        // Source (Daily sheets, 0-based): 
-        //   Basic: 0-7 (PartNumber, PartCode, etc.)
-        //   Daily: 8-38 (day 1-31 under first month block)
-        //   N=39(AN), N+1=71(BT), N+2=103(CZ), N+3=135(EF)
-        //
-        // Analyze (1-based):
-        //   A=1:Plant, B=2:PartNumber, C=3:PartCode, D=4:PartDesc, E=5:SuppCode
-        //   F=6:ShippingDock, G=7:DockCode, H=8:CarFamily, I=9:PackingSize
-        //   J-AN (10-40): Day 1-31 for first month
-        //   AO=41:N, BU=73:N+1, DA=105:N+2, EG=137:N+3
+        // ===== COPY ALL DATA FROM SOURCE TO ANALYZE =====
+        // Source Daily sheets have data from column 0 onwards (0-based)
+        // Analyze sheet: Column A=Plant, then B onwards = same as source column 0 onwards
+        // So: Analyze col 2 = Source col 0, Analyze col 3 = Source col 1, etc.
+        // Offset: Analyze column = Source column + 2 (because A=Plant is added)
         
-        // Source daily columns (0-based): day 1 starts at col 8, so day 1-31 = cols 8-38
-        const SOURCE_DAY_START = 8;  // 0-based, day 1 in source
-        
-        // Analyze daily columns (1-based): day 1 starts at col 10 (J), so day 1-31 = cols 10-40
-        const ANALYZE_DAY_START = 10; // 1-based, day 1 in Analyze
-        
-        // N columns in Analyze (1-based)
-        const ANALYZE_N_COL = 41;   // AO
-        const ANALYZE_N1_COL = 73;  // BU
-        const ANALYZE_N2_COL = 105; // DA
-        const ANALYZE_N3_COL = 137; // EG
+        const SOURCE_TO_ANALYZE_OFFSET = 2; // Analyze col = Source col + 2
+        const MAX_COLS_TO_COPY = 140; // Copy up to 140 columns from source
 
-        // Build list of columns to clear
-        const colsToClear = [];
-        // Basic info: A-I (1-9)
-        for (let c = 1; c <= 9; c++) colsToClear.push(c);
-        // Daily columns: J-AN (10-40)
-        for (let c = 10; c <= 40; c++) colsToClear.push(c);
-        // N values
-        colsToClear.push(ANALYZE_N_COL, ANALYZE_N1_COL, ANALYZE_N2_COL, ANALYZE_N3_COL);
-
+        // Clear old data rows
         const clearEndRow = analyzeStartRow + Math.max(analyzeRows.length, 100) + 5;
         for (let r = analyzeStartRow; r <= clearEndRow; r++) {
           const row = analyzeSheet.getRow(r);
-          for (const c of colsToClear) {
+          // Clear columns A through EJ (1-140)
+          for (let c = 1; c <= MAX_COLS_TO_COPY + 2; c++) {
             safeClearCell(row.getCell(c));
           }
         }
@@ -829,58 +807,19 @@ export default function App() {
         analyzeRows.forEach((rowData, idx) => {
           const row = analyzeSheet.getRow(analyzeStartRow + idx);
 
-          // Column A: Plant
+          // Column A (1): Plant
           const cellA = row.getCell(1);
           safeSetCellValue(cellA, rowData.plant);
           applyHighlight(cellA);
 
-          // Column B: Part Number
-          const cellB = row.getCell(2);
-          safeSetCellValue(cellB, rowData.partNumber);
-          applyHighlight(cellB);
-
-          // Column C: Part Code
-          const cellC = row.getCell(3);
-          safeSetCellValue(cellC, rowData.partCode);
-          applyHighlight(cellC);
-
-          // Column D: Part Desc
-          const cellD = row.getCell(4);
-          safeSetCellValue(cellD, rowData.partDesc);
-          applyHighlight(cellD);
-
-          // Column E: Supp Code
-          const cellE = row.getCell(5);
-          safeSetCellValue(cellE, rowData.suppCode);
-          applyHighlight(cellE);
-
-          // Column F: Shipping Dock
-          const cellF = row.getCell(6);
-          safeSetCellValue(cellF, rowData.shippingDock);
-          applyHighlight(cellF);
-
-          // Column G: Dock Code
-          const cellG = row.getCell(7);
-          safeSetCellValue(cellG, rowData.dockCode);
-          applyHighlight(cellG);
-
-          // Column H: Car Family
-          const cellH = row.getCell(8);
-          safeSetCellValue(cellH, rowData.carFamily);
-          applyHighlight(cellH);
-
-          // Column I: Packing Size
-          const cellI = row.getCell(9);
-          safeSetCellValue(cellI, rowData.packingSize);
-          applyHighlight(cellI);
-
-          // ===== COPY DAILY DATA (Day 1-31) =====
-          // From source rawRow cols 8-38 (0-based) to Analyze cols 10-40 (1-based)
+          // Copy ALL data from rawRow to Analyze (shifted by 1 column for Plant)
+          // Source col 0 -> Analyze col B (2)
+          // Source col 1 -> Analyze col C (3)
+          // ... and so on
           if (rowData.rawRow && Array.isArray(rowData.rawRow)) {
-            for (let day = 1; day <= 31; day++) {
-              const srcCol = SOURCE_DAY_START + (day - 1);  // 0-based: 8, 9, 10, ... 38
-              const destCol = ANALYZE_DAY_START + (day - 1); // 1-based: 10, 11, 12, ... 40
+            for (let srcCol = 0; srcCol < Math.min(rowData.rawRow.length, MAX_COLS_TO_COPY); srcCol++) {
               const value = rowData.rawRow[srcCol];
+              const destCol = srcCol + SOURCE_TO_ANALYZE_OFFSET; // 0+2=2, 1+2=3, etc.
               
               if (value !== undefined && value !== null && value !== '') {
                 const cell = row.getCell(destCol);
@@ -890,36 +829,16 @@ export default function App() {
             }
           }
 
-          // Column AO (41): N
-          const cellN = row.getCell(ANALYZE_N_COL);
-          safeSetCellValue(cellN, rowData.n);
-          applyHighlight(cellN);
-
-          // Column BU (73): N+1
-          const cellN1 = row.getCell(ANALYZE_N1_COL);
-          safeSetCellValue(cellN1, rowData.n1);
-          applyHighlight(cellN1);
-
-          // Column DA (105): N+2
-          const cellN2 = row.getCell(ANALYZE_N2_COL);
-          safeSetCellValue(cellN2, rowData.n2);
-          applyHighlight(cellN2);
-
-          // Column EG (137): N+3
-          const cellN3 = row.getCell(ANALYZE_N3_COL);
-          safeSetCellValue(cellN3, rowData.n3);
-          applyHighlight(cellN3);
-
           row.commit();
 
           // Log first 3 rows for verification
           if (idx < 3) {
-            const dailySample = rowData.rawRow ? rowData.rawRow.slice(8, 15) : [];
-            console.log(`Row ${idx + 1}: ${rowData.plant} | ${rowData.partNumber} | Daily[8-14]=${dailySample} | N=${rowData.n}`);
+            const rawLen = rowData.rawRow ? rowData.rawRow.length : 0;
+            console.log(`Row ${idx + 1}: ${rowData.plant} | ${rowData.partNumber} | rawRow has ${rawLen} columns | N=${rowData.n}`);
           }
         });
 
-        console.log(`✅ Analyze sheet updated: ${analyzeRows.length} rows with daily data`);
+        console.log(`✅ Analyze sheet updated: ${analyzeRows.length} rows with ALL data from source`);
       }
 
       fileName = `Production_Updated_${dateStr}.xlsx`;
