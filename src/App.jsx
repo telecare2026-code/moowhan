@@ -549,6 +549,22 @@ export default function App() {
         border: highlightBorder,
       };
     };
+    const isFormulaCell = (cell) =>
+      cell?.value &&
+      typeof cell.value === 'object' &&
+      (cell.value.formula || cell.value.sharedFormula);
+    const safeClearCell = (cell) => {
+      if (!cell || isFormulaCell(cell)) return;
+      if (cell.value !== null && cell.value !== undefined) {
+        cell.value = null;
+      }
+    };
+    const safeSetCellValue = (cell, value) => {
+      if (!cell || isFormulaCell(cell)) return;
+      if (value !== undefined && value !== null && value !== '') {
+        cell.value = value;
+      }
+    };
 
     // ===== CASE 1: Update existing template (preserve formatting) =====
     // Only use ExcelJS workbook for format preservation
@@ -573,10 +589,7 @@ export default function App() {
           const row = worksheet.getRow(r);
           // Clear values in data columns (up to column 200 to cover all data)
           for (let c = 1; c <= 200; c++) {
-            const cell = row.getCell(c);
-            if (cell.value !== null && cell.value !== undefined) {
-              cell.value = null;
-            }
+            safeClearCell(row.getCell(c));
           }
         }
 
@@ -618,7 +631,7 @@ export default function App() {
                 const colNumber = colIndex + 1; // Convert to 1-based
                 if (colNumber <= 200 && (value !== undefined && value !== null && value !== '')) {
                   const cell = targetRow.getCell(colNumber);
-                  cell.value = value;
+                  safeSetCellValue(cell, value);
                   // Highlight newly added/updated cells
                   applyHighlight(cell);
                 }
@@ -631,7 +644,7 @@ export default function App() {
                   const value = rowData.rawRow[colNumber];
                   if (value !== undefined && value !== null && value !== '') {
                     const cell = targetRow.getCell(colNumber);
-                    cell.value = value;
+                    safeSetCellValue(cell, value);
                     // Highlight newly added/updated cells
                     applyHighlight(cell);
                   }
@@ -654,7 +667,7 @@ export default function App() {
             basicCols.forEach(({ col, val }) => {
               if (val !== undefined && val !== null && val !== '') {
                 const cell = targetRow.getCell(col);
-                cell.value = val;
+                safeSetCellValue(cell, val);
                 applyHighlight(cell);
               }
             });
@@ -681,7 +694,7 @@ export default function App() {
             nCols.forEach(({ col, val }) => {
               if (val !== undefined && val !== null && val !== 0) {
                 const cell = targetRow.getCell(col);
-                cell.value = val;
+                safeSetCellValue(cell, val);
                 applyHighlight(cell);
               }
             });
@@ -701,10 +714,7 @@ export default function App() {
           for (let r = pivotStartRow; r <= pivotStartRow + summaryData.length + 5; r++) {
             const row = worksheet.getRow(r);
             for (let c = 1; c <= 5; c++) {
-              const cell = row.getCell(c);
-              if (cell.value !== null) {
-                cell.value = null;
-              }
+              safeClearCell(row.getCell(c));
             }
           }
 
@@ -716,11 +726,11 @@ export default function App() {
             const cell3 = row.getCell(3);
             const cell4 = row.getCell(4);
             const cell5 = row.getCell(5);
-            cell1.value = rowData.partNumber;
-            cell2.value = rowData.n;
-            cell3.value = rowData.n1;
-            cell4.value = rowData.n2;
-            cell5.value = rowData.n3;
+            safeSetCellValue(cell1, rowData.partNumber);
+            safeSetCellValue(cell2, rowData.n);
+            safeSetCellValue(cell3, rowData.n1);
+            safeSetCellValue(cell4, rowData.n2);
+            safeSetCellValue(cell5, rowData.n3);
             applyHighlight(cell1);
             applyHighlight(cell2);
             applyHighlight(cell3);
@@ -736,11 +746,11 @@ export default function App() {
           const totalCell3 = grandTotalRow.getCell(3);
           const totalCell4 = grandTotalRow.getCell(4);
           const totalCell5 = grandTotalRow.getCell(5);
-          totalCell1.value = 'Grand Total';
-          totalCell2.value = totals.n;
-          totalCell3.value = totals.n1;
-          totalCell4.value = totals.n2;
-          totalCell5.value = totals.n3;
+          safeSetCellValue(totalCell1, 'Grand Total');
+          safeSetCellValue(totalCell2, totals.n);
+          safeSetCellValue(totalCell3, totals.n1);
+          safeSetCellValue(totalCell4, totals.n2);
+          safeSetCellValue(totalCell5, totals.n3);
           applyHighlight(totalCell1);
           applyHighlight(totalCell2);
           applyHighlight(totalCell3);
@@ -775,10 +785,7 @@ export default function App() {
         for (let r = analyzeStartRow; r <= clearEndRow; r++) {
           const row = analyzeSheet.getRow(r);
           for (let c = 1; c <= analyzeMaxCols; c++) {
-            const cell = row.getCell(c);
-            if (cell.value !== null && cell.value !== undefined) {
-              cell.value = null;
-            }
+            safeClearCell(row.getCell(c));
           }
         }
 
@@ -800,20 +807,20 @@ export default function App() {
           const cellN3 = row.getCell(137); // EG
           const cellRef = row.getCell(138); // EH
 
-          cellA.value = rowData.plant;
-          cellB.value = rowData.partNumber;
-          cellC.value = rowData.partCode;
-          cellD.value = rowData.partDesc;
-          cellE.value = rowData.suppCode;
-          cellF.value = rowData.shippingDock;
-          cellG.value = rowData.dockCode;
-          cellH.value = rowData.carFamily;
-          cellI.value = rowData.packingSize;
-          cellN.value = rowData.n;
-          cellN1.value = rowData.n1;
-          cellN2.value = rowData.n2;
-          cellN3.value = rowData.n3;
-          cellRef.value = rowData.plant;
+          safeSetCellValue(cellA, rowData.plant);
+          safeSetCellValue(cellB, rowData.partNumber);
+          safeSetCellValue(cellC, rowData.partCode);
+          safeSetCellValue(cellD, rowData.partDesc);
+          safeSetCellValue(cellE, rowData.suppCode);
+          safeSetCellValue(cellF, rowData.shippingDock);
+          safeSetCellValue(cellG, rowData.dockCode);
+          safeSetCellValue(cellH, rowData.carFamily);
+          safeSetCellValue(cellI, rowData.packingSize);
+          safeSetCellValue(cellN, rowData.n);
+          safeSetCellValue(cellN1, rowData.n1);
+          safeSetCellValue(cellN2, rowData.n2);
+          safeSetCellValue(cellN3, rowData.n3);
+          safeSetCellValue(cellRef, rowData.plant);
 
           [cellA, cellB, cellC, cellD, cellE, cellF, cellG, cellH, cellI, cellN, cellN1, cellN2, cellN3, cellRef].forEach(applyHighlight);
           row.commit();
@@ -830,12 +837,12 @@ export default function App() {
             const cellSumN2 = row.getCell(152); // EV
             const cellSumN3 = row.getCell(153); // EW
 
-            cellTrue.value = true;
-            cellPart.value = rowData.partNumber;
-            cellSumN.value = rowData.n;
-            cellSumN1.value = rowData.n1;
-            cellSumN2.value = rowData.n2;
-            cellSumN3.value = rowData.n3;
+            safeSetCellValue(cellTrue, true);
+            safeSetCellValue(cellPart, rowData.partNumber);
+            safeSetCellValue(cellSumN, rowData.n);
+            safeSetCellValue(cellSumN1, rowData.n1);
+            safeSetCellValue(cellSumN2, rowData.n2);
+            safeSetCellValue(cellSumN3, rowData.n3);
 
             [cellTrue, cellPart, cellSumN, cellSumN1, cellSumN2, cellSumN3].forEach(applyHighlight);
             row.commit();
