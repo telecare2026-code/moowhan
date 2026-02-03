@@ -1602,7 +1602,7 @@ export default function App() {
           </div>
         )}
 
-        {showChart && <ChartDashboard data={processedData} summaryData={summaryData} onClose={() => setShowChart(false)} /}
+        {showChart && <ChartDashboard data={processedData} summaryData={summaryData} onClose={() => setShowChart(false)} />}
         {showPreview && <ExcelPreview data={processedData} summaryData={summaryData} fileName={previewFileName} onClose={() => setShowPreview(false)} onDownload={exportToExcel} />}
       </main>
 
