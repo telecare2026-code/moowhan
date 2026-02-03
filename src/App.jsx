@@ -174,6 +174,64 @@ const extractDataFromSourceXLSX = (workbook) => {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
+  const norm = (v) => String(v ?? '').trim().toUpperCase();
+  const MONTHS = new Set(['DEC', 'JAN', 'FEB', 'MAR']);
+  const buildSourceMonthDayMap = () => {
+    const maxScan = Math.min(30, jsonData.length);
+
+    const hasMonth = (row) => (row || []).some((cell) => MONTHS.has(norm(cell)));
+    const hasSub = (row) => {
+      const cells = (row || []).map(norm);
+      return cells.includes('N') || cells.includes('N+1') || cells.includes('N+2') || cells.includes('N+3') || cells.includes('1');
+    };
+
+    let monthRowIdx = -1;
+    for (let r = 0; r < maxScan; r++) {
+      if (hasMonth(jsonData[r])) {
+        monthRowIdx = r;
+        break;
+      }
+    }
+
+    // Subheader row usually right below the month row
+    let subRowIdx = -1;
+    if (monthRowIdx >= 0) {
+      for (let r = monthRowIdx + 1; r < maxScan; r++) {
+        if (hasSub(jsonData[r])) {
+          subRowIdx = r;
+          break;
+        }
+      }
+    }
+
+    // Fallback: try row 0/1 if not found
+    if (monthRowIdx === -1 && maxScan >= 1) monthRowIdx = 0;
+    if (subRowIdx === -1 && maxScan >= 2) subRowIdx = 1;
+
+    const monthRow = jsonData[monthRowIdx] || [];
+    const subRow = jsonData[subRowIdx] || [];
+    const maxLen = Math.max(monthRow.length, subRow.length, 200);
+
+    const map = {};
+    let currentMonth = '';
+    for (let c = 0; c < maxLen; c++) {
+      const m = norm(monthRow[c]);
+      if (MONTHS.has(m)) currentMonth = m;
+      const subRaw = subRow[c];
+      const sub = norm(subRaw);
+      if (!currentMonth) continue;
+      if (!sub) continue;
+      // Accept N / N+1 / N+2 / N+3 or day numbers 1..31
+      const isDay = /^[0-9]{1,2}$/.test(sub) && Number(sub) >= 1 && Number(sub) <= 31;
+      const isN = sub === 'N' || sub === 'N+1' || sub === 'N+2' || sub === 'N+3';
+      if (!isDay && !isN) continue;
+      map[`${currentMonth}|${sub}`] = c; // 0-based column in rawRow
+    }
+    return map;
+  };
+
+  const sourceMap = buildSourceMonthDayMap();
+
   const headerRowIndex = 12; // Row 13 (0-based)
   const dataStartIndex = 13; // Row 14 (0-based)
 
@@ -229,6 +287,7 @@ const extractDataFromSourceXLSX = (workbook) => {
       // Store ALL columns - preserve complete row data including dates, formulas, etc.
       rawRow: row.slice(0, maxCol),
       colPositions: { nCol, n1Col, n2Col, n3Col },
+      sourceMap,
     });
   }
 
@@ -764,7 +823,6 @@ export default function App() {
       const analyzeSheet = workbook.getWorksheet('Analyze');
       if (analyzeSheet) {
         const analyzeStartRow = 3; // User confirmed row 3
-        const analyzeMaxCols = 153; // Up to column EW for N+3 summary
         const analyzeRows = [];
 
         Object.entries(processedData).forEach(([sheetName, rows]) => {
@@ -780,18 +838,58 @@ export default function App() {
           return a.partNumber.localeCompare(b.partNumber);
         });
 
-        // Clear old values in Analyze range (A..EW) for existing rows
+        // Build destination map from Analyze headers (Row 1: month merged, Row 2: subheader)
+        const normText = (v) => String(v ?? '').trim().toUpperCase();
+        const MONTHS = new Set(['DEC', 'JAN', 'FEB', 'MAR']);
+        const getCellText = (cell) => {
+          let v = cell?.value;
+          if ((v === null || v === undefined || v === '') && cell?.master) v = cell.master.value;
+          if (v === null || v === undefined) return '';
+          if (typeof v === 'object') {
+            if (v.richText) return v.richText.map((t) => t.text).join('');
+            if (v.text) return v.text;
+            if (v.result !== undefined && v.result !== null) return String(v.result);
+            return '';
+          }
+          return String(v);
+        };
+
+        const analyzeDestMap = {};
+        const headerMonthRow = analyzeSheet.getRow(1);
+        const headerSubRow = analyzeSheet.getRow(2);
+        let currentMonth = '';
+        const maxColsScan = 220;
+        for (let col = 1; col <= maxColsScan; col++) {
+          const m = normText(getCellText(headerMonthRow.getCell(col)));
+          if (MONTHS.has(m)) currentMonth = m;
+          const sub = normText(getCellText(headerSubRow.getCell(col)));
+          if (!currentMonth || !sub) continue;
+          const isDay = /^[0-9]{1,2}$/.test(sub) && Number(sub) >= 1 && Number(sub) <= 31;
+          const isN = sub === 'N' || sub === 'N+1' || sub === 'N+2' || sub === 'N+3';
+          if (!isDay && !isN) continue;
+          analyzeDestMap[`${currentMonth}|${sub}`] = col; // 1-based column number in Analyze
+        }
+
+        const destColsToClear = new Set([
+          1, 2, 3, 4, 5, 6, 7, 8, 9, // A..I
+          138, // EH ref
+          148, 149, 150, 151, 152, 153, // ER..EW summary block
+        ]);
+        Object.values(analyzeDestMap).forEach((c) => destColsToClear.add(c));
+
+        // Clear old values in Analyze only where we write
         const clearEndRow = analyzeStartRow + Math.max(analyzeRows.length, summaryData?.length || 0) + 5;
         for (let r = analyzeStartRow; r <= clearEndRow; r++) {
           const row = analyzeSheet.getRow(r);
-          for (let c = 1; c <= analyzeMaxCols; c++) {
+          for (const c of destColsToClear) {
             safeClearCell(row.getCell(c));
           }
         }
 
-        // Write detail rows (by plant)
+        // Write detail rows (by plant) including ALL month/day columns
         analyzeRows.forEach((rowData, idx) => {
           const row = analyzeSheet.getRow(analyzeStartRow + idx);
+
           const cellA = row.getCell(1);
           const cellB = row.getCell(2);
           const cellC = row.getCell(3);
@@ -801,10 +899,6 @@ export default function App() {
           const cellG = row.getCell(7);
           const cellH = row.getCell(8);
           const cellI = row.getCell(9);
-          const cellN = row.getCell(41); // AO
-          const cellN1 = row.getCell(73); // BU
-          const cellN2 = row.getCell(105); // DA
-          const cellN3 = row.getCell(137); // EG
           const cellRef = row.getCell(138); // EH
 
           safeSetCellValue(cellA, rowData.plant);
@@ -816,13 +910,24 @@ export default function App() {
           safeSetCellValue(cellG, rowData.dockCode);
           safeSetCellValue(cellH, rowData.carFamily);
           safeSetCellValue(cellI, rowData.packingSize);
-          safeSetCellValue(cellN, rowData.n);
-          safeSetCellValue(cellN1, rowData.n1);
-          safeSetCellValue(cellN2, rowData.n2);
-          safeSetCellValue(cellN3, rowData.n3);
           safeSetCellValue(cellRef, rowData.plant);
 
-          [cellA, cellB, cellC, cellD, cellE, cellF, cellG, cellH, cellI, cellN, cellN1, cellN2, cellN3, cellRef].forEach(applyHighlight);
+          [cellA, cellB, cellC, cellD, cellE, cellF, cellG, cellH, cellI, cellRef].forEach(applyHighlight);
+
+          const srcMap = rowData.sourceMap || {};
+          // Copy every month/day value by key-to-key mapping
+          Object.entries(analyzeDestMap).forEach(([key, destCol]) => {
+            const srcCol = srcMap[key];
+            if (srcCol === undefined || srcCol === null) return;
+            const value = Array.isArray(rowData.rawRow) ? rowData.rawRow[srcCol] : undefined;
+            const cell = row.getCell(destCol);
+            safeSetCellValue(cell, value);
+            // Only highlight when we actually set a value
+            if (cell.value !== null && cell.value !== undefined && cell.value !== '') {
+              applyHighlight(cell);
+            }
+          });
+
           row.commit();
         });
 
