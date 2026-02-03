@@ -531,6 +531,24 @@ export default function App() {
     let workbook;
     let fileName;
     const dateStr = new Date().toISOString().slice(0, 10);
+    const highlightFill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE6F7FF' }, // Light blue, distinct from template colors
+    };
+    const highlightBorder = {
+      top: { style: 'thin', color: { argb: 'FF1E40AF' } },
+      left: { style: 'thin', color: { argb: 'FF1E40AF' } },
+      bottom: { style: 'thin', color: { argb: 'FF1E40AF' } },
+      right: { style: 'thin', color: { argb: 'FF1E40AF' } },
+    };
+    const applyHighlight = (cell) => {
+      cell.style = {
+        ...cell.style,
+        fill: highlightFill,
+        border: highlightBorder,
+      };
+    };
 
     // ===== CASE 1: Update existing template (preserve formatting) =====
     // Only use ExcelJS workbook for format preservation
@@ -591,13 +609,6 @@ export default function App() {
             });
           }
 
-          // Highlight color for newly added/updated cells (light yellow background)
-          const highlightFill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: 'FFFFE6' }, // Light yellow - clearly visible but not too bright
-          };
-
           // Write ALL columns from rawRow (preserve complete data including dates, formulas, etc.)
           if (rowData.rawRow) {
             // rawRow can be array (0-based) or object (1-based colNumber keys)
@@ -609,9 +620,7 @@ export default function App() {
                   const cell = targetRow.getCell(colNumber);
                   cell.value = value;
                   // Highlight newly added/updated cells
-                  if (!cell.style) cell.style = {};
-                  // Add highlight fill (will overlay existing fill if any)
-                  cell.style.fill = highlightFill;
+                  applyHighlight(cell);
                 }
               });
             } else {
@@ -624,8 +633,7 @@ export default function App() {
                     const cell = targetRow.getCell(colNumber);
                     cell.value = value;
                     // Highlight newly added/updated cells
-                    if (!cell.style) cell.style = {};
-                    cell.style.fill = highlightFill;
+                    applyHighlight(cell);
                   }
                 }
               });
@@ -647,8 +655,7 @@ export default function App() {
               if (val !== undefined && val !== null && val !== '') {
                 const cell = targetRow.getCell(col);
                 cell.value = val;
-                if (!cell.style) cell.style = {};
-                cell.style.fill = highlightFill;
+                applyHighlight(cell);
               }
             });
 
@@ -675,8 +682,7 @@ export default function App() {
               if (val !== undefined && val !== null && val !== 0) {
                 const cell = targetRow.getCell(col);
                 cell.value = val;
-                if (!cell.style) cell.style = {};
-                cell.style.fill = highlightFill;
+                applyHighlight(cell);
               }
             });
           }
@@ -705,22 +711,135 @@ export default function App() {
           // Write new summary data
           summaryData.forEach((rowData, idx) => {
             const row = worksheet.getRow(pivotStartRow + idx);
-            row.getCell(1).value = rowData.partNumber;
-            row.getCell(2).value = rowData.n;
-            row.getCell(3).value = rowData.n1;
-            row.getCell(4).value = rowData.n2;
-            row.getCell(5).value = rowData.n3;
+            const cell1 = row.getCell(1);
+            const cell2 = row.getCell(2);
+            const cell3 = row.getCell(3);
+            const cell4 = row.getCell(4);
+            const cell5 = row.getCell(5);
+            cell1.value = rowData.partNumber;
+            cell2.value = rowData.n;
+            cell3.value = rowData.n1;
+            cell4.value = rowData.n2;
+            cell5.value = rowData.n3;
+            applyHighlight(cell1);
+            applyHighlight(cell2);
+            applyHighlight(cell3);
+            applyHighlight(cell4);
+            applyHighlight(cell5);
             row.commit();
           });
 
           // Add Grand Total
           const grandTotalRow = worksheet.getRow(pivotStartRow + summaryData.length);
-          grandTotalRow.getCell(1).value = 'Grand Total';
-          grandTotalRow.getCell(2).value = totals.n;
-          grandTotalRow.getCell(3).value = totals.n1;
-          grandTotalRow.getCell(4).value = totals.n2;
-          grandTotalRow.getCell(5).value = totals.n3;
+          const totalCell1 = grandTotalRow.getCell(1);
+          const totalCell2 = grandTotalRow.getCell(2);
+          const totalCell3 = grandTotalRow.getCell(3);
+          const totalCell4 = grandTotalRow.getCell(4);
+          const totalCell5 = grandTotalRow.getCell(5);
+          totalCell1.value = 'Grand Total';
+          totalCell2.value = totals.n;
+          totalCell3.value = totals.n1;
+          totalCell4.value = totals.n2;
+          totalCell5.value = totals.n3;
+          applyHighlight(totalCell1);
+          applyHighlight(totalCell2);
+          applyHighlight(totalCell3);
+          applyHighlight(totalCell4);
+          applyHighlight(totalCell5);
           grandTotalRow.commit();
+        }
+      }
+
+      // Update Analyze sheet (summary of all 4 plants)
+      const analyzeSheet = workbook.getWorksheet('Analyze');
+      if (analyzeSheet) {
+        const analyzeStartRow = 3; // User confirmed row 3
+        const analyzeMaxCols = 153; // Up to column EW for N+3 summary
+        const analyzeRows = [];
+
+        Object.entries(processedData).forEach(([sheetName, rows]) => {
+          const plant = sheetName.split(' ')[0];
+          rows.forEach((row) => {
+            analyzeRows.push({ plant, ...row });
+          });
+        });
+
+        analyzeRows.sort((a, b) => {
+          const plantSort = a.plant.localeCompare(b.plant);
+          if (plantSort !== 0) return plantSort;
+          return a.partNumber.localeCompare(b.partNumber);
+        });
+
+        // Clear old values in Analyze range (A..EW) for existing rows
+        const clearEndRow = analyzeStartRow + Math.max(analyzeRows.length, summaryData?.length || 0) + 5;
+        for (let r = analyzeStartRow; r <= clearEndRow; r++) {
+          const row = analyzeSheet.getRow(r);
+          for (let c = 1; c <= analyzeMaxCols; c++) {
+            const cell = row.getCell(c);
+            if (cell.value !== null && cell.value !== undefined) {
+              cell.value = null;
+            }
+          }
+        }
+
+        // Write detail rows (by plant)
+        analyzeRows.forEach((rowData, idx) => {
+          const row = analyzeSheet.getRow(analyzeStartRow + idx);
+          const cellA = row.getCell(1);
+          const cellB = row.getCell(2);
+          const cellC = row.getCell(3);
+          const cellD = row.getCell(4);
+          const cellE = row.getCell(5);
+          const cellF = row.getCell(6);
+          const cellG = row.getCell(7);
+          const cellH = row.getCell(8);
+          const cellI = row.getCell(9);
+          const cellN = row.getCell(41); // AO
+          const cellN1 = row.getCell(73); // BU
+          const cellN2 = row.getCell(105); // DA
+          const cellN3 = row.getCell(137); // EG
+          const cellRef = row.getCell(138); // EH
+
+          cellA.value = rowData.plant;
+          cellB.value = rowData.partNumber;
+          cellC.value = rowData.partCode;
+          cellD.value = rowData.partDesc;
+          cellE.value = rowData.suppCode;
+          cellF.value = rowData.shippingDock;
+          cellG.value = rowData.dockCode;
+          cellH.value = rowData.carFamily;
+          cellI.value = rowData.packingSize;
+          cellN.value = rowData.n;
+          cellN1.value = rowData.n1;
+          cellN2.value = rowData.n2;
+          cellN3.value = rowData.n3;
+          cellRef.value = rowData.plant;
+
+          [cellA, cellB, cellC, cellD, cellE, cellF, cellG, cellH, cellI, cellN, cellN1, cellN2, cellN3, cellRef].forEach(applyHighlight);
+          row.commit();
+        });
+
+        // Summary block on the right (ER–EW)
+        if (summaryData) {
+          summaryData.forEach((rowData, idx) => {
+            const row = analyzeSheet.getRow(analyzeStartRow + idx);
+            const cellTrue = row.getCell(148); // ER
+            const cellPart = row.getCell(149); // ES
+            const cellSumN = row.getCell(150); // ET
+            const cellSumN1 = row.getCell(151); // EU
+            const cellSumN2 = row.getCell(152); // EV
+            const cellSumN3 = row.getCell(153); // EW
+
+            cellTrue.value = true;
+            cellPart.value = rowData.partNumber;
+            cellSumN.value = rowData.n;
+            cellSumN1.value = rowData.n1;
+            cellSumN2.value = rowData.n2;
+            cellSumN3.value = rowData.n3;
+
+            [cellTrue, cellPart, cellSumN, cellSumN1, cellSumN2, cellSumN3].forEach(applyHighlight);
+            row.commit();
+          });
         }
       }
 
