@@ -151,7 +151,7 @@ export default function ExcelConsolidator() {
                 <FileSpreadsheet className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-white">Production Data Consolidator</h1>
+                <h1 className="text-xl font-bold text-white">รีบทำเดียวอดเลนเกม</h1>
                 <p className="text-sm text-slate-400">TMT Camera Production Plan Summary</p>
               </div>
             </div>
@@ -509,7 +509,7 @@ export default function ExcelConsolidator() {
       {/* Footer */}
       <footer className="border-t border-slate-700 mt-12 py-6">
         <div className="max-w-7xl mx-auto px-4 text-center text-slate-500 text-sm">
-          Production Data Consolidator • TMT Camera Production Plan Summary System
+          ชอน • TMT Camera Production Plan Summary System
         </div>
       </footer>
     </div>

@@ -94,7 +94,7 @@ export default function App() {
               <Icons.File />
             </div>
             <div>
-              <h1 className="text-lg font-bold">Production Data Consolidator</h1>
+              <h1 className="text-lg font-bold">รีบทำเดียวอดเลนเกม</h1>
               <p className="text-xs text-slate-400">TMT Camera Production Plan</p>
             </div>
           </div>

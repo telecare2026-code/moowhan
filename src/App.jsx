@@ -1249,7 +1249,7 @@ export default function App() {
               <Icons.File />
             </div>
             <div>
-              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-700 to-blue-500 bg-clip-text text-transparent">Production Data Consolidator</h1>
+              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-700 to-blue-500 bg-clip-text text-transparent">รีบทำเดียวอดเลนเกม</h1>
               <p className="text-sm text-slate-500">TMT Camera Production Plan Summary</p>
             </div>
           </div>
@@ -1607,7 +1607,7 @@ export default function App() {
       </main>
 
       <footer className="border-t border-slate-200 mt-12 py-6 bg-white text-center text-slate-400 text-sm">
-        Production Data Consolidator v1.0
+        ชอน v1.0
       </footer>
     </div>
   );
