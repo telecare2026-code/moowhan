@@ -1263,18 +1263,29 @@ export default function App() {
         <div className="flex flex-wrap gap-2 mb-6">
           {[
             { id: 'upload', label: 'อัปโหลดไฟล์', Icon: Icons.Upload },
-            { id: 'preview', label: 'ตรวจสอบข้อมูล', Icon: Icons.Eye, disabled: !processedData },
-            { id: 'matching', label: 'รายละเอียด Matching', Icon: Icons.Link, disabled: !matchingDetails },
-            { id: 'changelog', label: 'ประวัติการแก้ไข', Icon: Icons.History, disabled: changeLog.length === 0 },
-            { id: 'summary', label: 'สรุปรวม', Icon: Icons.Chart, disabled: !summaryData },
+            { id: 'preview', label: 'ตรวจสอบข้อมูล', Icon: Icons.Eye, disabled: !processedData, tooltip: 'ต้องประมวลผลไฟล์ก่อน' },
+            { id: 'matching', label: 'รายละเอียด Matching', Icon: Icons.Link, disabled: !matchingDetails, tooltip: 'ต้องประมวลผลไฟล์ก่อน' },
+            { id: 'changelog', label: 'ประวัติการแก้ไข', Icon: Icons.History, disabled: changeLog.length === 0, tooltip: changeLog.length === 0 ? 'ยังไม่มีการแก้ไข' : undefined },
+            { id: 'summary', label: 'สรุปรวม', Icon: Icons.Chart, disabled: !summaryData, tooltip: 'ต้องประมวลผลไฟล์ก่อน' },
           ].map((item) => (
-            <button key={item.id} onClick={() => !item.disabled && setTab(item.id)} disabled={item.disabled}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium transition-all border ${
-                tab === item.id ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 
-                item.disabled ? 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed' : 
-                'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
-              <span className="w-5 h-5"><item.Icon /></span>{item.label}
-            </button>
+            <div key={item.id} className="relative group">
+              <button 
+                onClick={() => !item.disabled && setTab(item.id)} 
+                disabled={item.disabled}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium transition-all border ${
+                  tab === item.id ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 
+                  item.disabled ? 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed' : 
+                  'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+              >
+                <span className="w-5 h-5"><item.Icon /></span>{item.label}
+              </button>
+              {item.tooltip && item.disabled && (
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-800 text-white text-xs rounded-lg whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
+                  {item.tooltip}
+                  <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                </div>
+              )}
+            </div>
           ))}
         </div>
 
@@ -1476,7 +1487,122 @@ export default function App() {
           </div>
         )}
 
-        {showChart && <ChartDashboard data={processedData} summaryData={summaryData} onClose={() => setShowChart(false)} />}
+        {/* Matching Details Tab */}
+        {tab === 'matching' && matchingDetails && (
+          <div className="space-y-6">
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <p className="text-blue-800 text-sm">
+                <span className="font-semibold">รายละเอียด Matching:</span> แสดงข้อมูลว่าแต่ละ Part Number ถูกดึงมาจากไฟล์ของโรงงานใดบ้าง
+              </p>
+            </div>
+            
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-6 py-4 border-b bg-slate-50 flex justify-between items-center">
+                <h3 className="font-semibold">รายละเอียดการ Matching ({Object.keys(matchingDetails).length} Part Numbers)</h3>
+              </div>
+              <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-50 z-10">
+                    <tr>
+                      <th className="text-left py-3 px-4 border-b">Part Number</th>
+                      <th className="text-left border-b">แหล่งที่มา (Plant)</th>
+                      <th className="text-left border-b">Part Code</th>
+                      <th className="text-right border-b">N</th>
+                      <th className="text-right border-b">N+1</th>
+                      <th className="text-right border-b">N+2</th>
+                      <th className="text-right border-b">N+3</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(matchingDetails).sort((a, b) => a[0].localeCompare(b[0])).map(([partNumber, data]) => (
+                      <React.Fragment key={partNumber}>
+                        {data.sources.map((source, idx) => (
+                          <tr key={`${partNumber}-${idx}`} className="border-b hover:bg-slate-50">
+                            {idx === 0 && (
+                              <td rowSpan={data.sources.length} className="py-3 px-4 font-mono text-blue-600 font-medium align-top bg-slate-50/50">
+                                {partNumber}
+                              </td>
+                            )}
+                            <td className="py-3">
+                              <span className={`px-2 py-0.5 rounded text-xs ${PLANT_META[source.plant]?.badge || 'bg-gray-100 text-gray-700'}`}>
+                                {source.plant}
+                              </span>
+                            </td>
+                            <td className="font-mono text-xs text-slate-600">{source.partCode}</td>
+                            <td className="text-right">{formatNumber(source.n)}</td>
+                            <td className="text-right">{formatNumber(source.n1)}</td>
+                            <td className="text-right">{formatNumber(source.n2)}</td>
+                            <td className="text-right">{formatNumber(source.n3)}</td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Changelog Tab */}
+        {tab === 'changelog' && changeLog.length > 0 && (
+          <div className="space-y-6">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <p className="text-amber-800 text-sm">
+                <span className="font-semibold">ประวัติการประมวลผล:</span> แสดงรายการที่เกิดขึ้นระหว่างการดึงข้อมูลจากไฟล์
+              </p>
+            </div>
+            
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-6 py-4 border-b bg-slate-50">
+                <h3 className="font-semibold">รายการประมวลผล ({changeLog.length} รายการ)</h3>
+              </div>
+              <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-50 z-10">
+                    <tr className="border-b">
+                      <th className="text-left py-3 px-4">เวลา</th>
+                      <th className="text-left">ไฟล์</th>
+                      <th className="text-left">โรงงาน</th>
+                      <th className="text-left">Part Number</th>
+                      <th className="text-left">การดำเนินการ</th>
+                      <th className="text-left">รายละเอียด</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {changeLog.map((log, idx) => (
+                      <tr key={idx} className="border-b hover:bg-slate-50">
+                        <td className="py-3 px-4 text-slate-500 text-xs whitespace-nowrap">
+                          {log.timestamp ? new Date(log.timestamp).toLocaleString('th-TH') : '-'}
+                        </td>
+                        <td className="py-3 text-slate-700 text-xs">{log.fileName}</td>
+                        <td className="py-3">
+                          <span className={`px-2 py-0.5 rounded text-xs ${PLANT_META[log.plant]?.badge || 'bg-gray-100 text-gray-700'}`}>
+                            {log.plant}
+                          </span>
+                        </td>
+                        <td className="py-3 font-mono text-xs text-blue-600">{log.partNumber || '-'}</td>
+                        <td className="py-3">
+                          <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                            log.action === 'error' ? 'bg-red-100 text-red-700' :
+                            log.action === 'extracted' ? 'bg-emerald-100 text-emerald-700' :
+                            'bg-blue-100 text-blue-700'
+                          }`}>
+                            {log.action === 'error' ? 'ข้อผิดพลาด' :
+                             log.action === 'extracted' ? 'ดึงข้อมูล' : log.action}
+                          </span>
+                        </td>
+                        <td className="py-3 text-slate-600 text-xs">{log.details || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showChart && <ChartDashboard data={processedData} summaryData={summaryData} onClose={() => setShowChart(false)} /}
         {showPreview && <ExcelPreview data={processedData} summaryData={summaryData} fileName={previewFileName} onClose={() => setShowPreview(false)} onDownload={exportToExcel} />}
       </main>
 
