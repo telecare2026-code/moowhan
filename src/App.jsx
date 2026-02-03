@@ -170,7 +170,7 @@ const readExcelFileExcelJS = async (file) => {
 };
 
 // Extract data from xlsx workbook (for source files)
-// ===== SIMPLIFIED: Only extract basic info + N/N+1/N+2/N+3 =====
+// Extracts basic info + daily data + N/N+1/N+2/N+3
 const extractDataFromSourceXLSX = (workbook) => {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
@@ -184,6 +184,7 @@ const extractDataFromSourceXLSX = (workbook) => {
   const data = [];
 
   // Find N, N+1, N+2, N+3 columns from header row
+  // In source files (Daily sheets): AN=40, BT=72, CZ=104, EF=136 (1-based) = 39, 71, 103, 135 (0-based)
   let nCol = -1, n1Col = -1, n2Col = -1, n3Col = -1;
   headers.forEach((h, i) => {
     const val = String(h || '').trim().toUpperCase();
@@ -193,13 +194,13 @@ const extractDataFromSourceXLSX = (workbook) => {
     else if (val === 'N+3' && n3Col === -1) n3Col = i;
   });
 
-  // Default positions if not found in header
-  if (nCol === -1) nCol = 39;
-  if (n1Col === -1) n1Col = 71;
-  if (n2Col === -1) n2Col = 103;
-  if (n3Col === -1) n3Col = 135;
+  // Default positions if not found in header (0-based index)
+  if (nCol === -1) nCol = 39;   // AN
+  if (n1Col === -1) n1Col = 71;  // BT
+  if (n2Col === -1) n2Col = 103; // CZ
+  if (n3Col === -1) n3Col = 135; // EF
 
-  console.log(`N columns found at: N=${nCol}, N+1=${n1Col}, N+2=${n2Col}, N+3=${n3Col}`);
+  console.log(`Source N columns (0-based): N=${nCol}, N+1=${n1Col}, N+2=${n2Col}, N+3=${n3Col}`);
 
   for (let i = dataStartIndex; i < jsonData.length; i++) {
     const row = jsonData[i];
@@ -208,6 +209,9 @@ const extractDataFromSourceXLSX = (workbook) => {
     const partNumber = String(row[0] || '').trim();
     if (!partNumber || partNumber.length < 5) continue;
 
+    // Store rawRow to copy daily columns later
+    const maxCol = Math.max(row.length, 150);
+    
     data.push({
       partNumber,
       partCode: row[1] || '',
@@ -221,6 +225,9 @@ const extractDataFromSourceXLSX = (workbook) => {
       n1: Number(row[n1Col]) || 0,
       n2: Number(row[n2Col]) || 0,
       n3: Number(row[n3Col]) || 0,
+      // Keep entire row for copying daily data
+      rawRow: row.slice(0, maxCol),
+      colPositions: { nCol, n1Col, n2Col, n3Col },
     });
   }
 
@@ -777,10 +784,39 @@ export default function App() {
         console.log(`=== ANALYZE SHEET ===`);
         console.log(`Total rows to write: ${analyzeRows.length}`);
 
-        // Clear old data in columns we will write to:
+        // ===== COLUMN MAPPING =====
+        // Source (Daily sheets, 0-based): 
+        //   Basic: 0-7 (PartNumber, PartCode, etc.)
+        //   Daily: 8-38 (day 1-31 under first month block)
+        //   N=39(AN), N+1=71(BT), N+2=103(CZ), N+3=135(EF)
+        //
+        // Analyze (1-based):
+        //   A=1:Plant, B=2:PartNumber, C=3:PartCode, D=4:PartDesc, E=5:SuppCode
+        //   F=6:ShippingDock, G=7:DockCode, H=8:CarFamily, I=9:PackingSize
+        //   J-AN (10-40): Day 1-31 for first month
+        //   AO=41:N, BU=73:N+1, DA=105:N+2, EG=137:N+3
+        
+        // Source daily columns (0-based): day 1 starts at col 8, so day 1-31 = cols 8-38
+        const SOURCE_DAY_START = 8;  // 0-based, day 1 in source
+        
+        // Analyze daily columns (1-based): day 1 starts at col 10 (J), so day 1-31 = cols 10-40
+        const ANALYZE_DAY_START = 10; // 1-based, day 1 in Analyze
+        
+        // N columns in Analyze (1-based)
+        const ANALYZE_N_COL = 41;   // AO
+        const ANALYZE_N1_COL = 73;  // BU
+        const ANALYZE_N2_COL = 105; // DA
+        const ANALYZE_N3_COL = 137; // EG
+
+        // Build list of columns to clear
+        const colsToClear = [];
         // Basic info: A-I (1-9)
-        // N values: AO=41, BU=73, DA=105, EG=137
-        const colsToClear = [1, 2, 3, 4, 5, 6, 7, 8, 9, 41, 73, 105, 137];
+        for (let c = 1; c <= 9; c++) colsToClear.push(c);
+        // Daily columns: J-AN (10-40)
+        for (let c = 10; c <= 40; c++) colsToClear.push(c);
+        // N values
+        colsToClear.push(ANALYZE_N_COL, ANALYZE_N1_COL, ANALYZE_N2_COL, ANALYZE_N3_COL);
+
         const clearEndRow = analyzeStartRow + Math.max(analyzeRows.length, 100) + 5;
         for (let r = analyzeStartRow; r <= clearEndRow; r++) {
           const row = analyzeSheet.getRow(r);
@@ -790,14 +826,6 @@ export default function App() {
         }
 
         // Write rows to Analyze sheet
-        // Basic info columns: A=Plant, B=PartNumber, C=PartCode, D=PartDesc, E=SuppCode,
-        //                     F=ShippingDock, G=DockCode, H=CarFamily, I=PackingSize
-        // N columns in Analyze: AO=41, BU=73, DA=105, EG=137 (1-based)
-        const ANALYZE_N_COL = 41;   // AO
-        const ANALYZE_N1_COL = 73;  // BU
-        const ANALYZE_N2_COL = 105; // DA
-        const ANALYZE_N3_COL = 137; // EG
-
         analyzeRows.forEach((rowData, idx) => {
           const row = analyzeSheet.getRow(analyzeStartRow + idx);
 
@@ -846,6 +874,22 @@ export default function App() {
           safeSetCellValue(cellI, rowData.packingSize);
           applyHighlight(cellI);
 
+          // ===== COPY DAILY DATA (Day 1-31) =====
+          // From source rawRow cols 8-38 (0-based) to Analyze cols 10-40 (1-based)
+          if (rowData.rawRow && Array.isArray(rowData.rawRow)) {
+            for (let day = 1; day <= 31; day++) {
+              const srcCol = SOURCE_DAY_START + (day - 1);  // 0-based: 8, 9, 10, ... 38
+              const destCol = ANALYZE_DAY_START + (day - 1); // 1-based: 10, 11, 12, ... 40
+              const value = rowData.rawRow[srcCol];
+              
+              if (value !== undefined && value !== null && value !== '') {
+                const cell = row.getCell(destCol);
+                safeSetCellValue(cell, value);
+                applyHighlight(cell);
+              }
+            }
+          }
+
           // Column AO (41): N
           const cellN = row.getCell(ANALYZE_N_COL);
           safeSetCellValue(cellN, rowData.n);
@@ -870,11 +914,12 @@ export default function App() {
 
           // Log first 3 rows for verification
           if (idx < 3) {
-            console.log(`Row ${idx + 1}: ${rowData.plant} | ${rowData.partNumber} | N(AO)=${rowData.n} | N+1(BU)=${rowData.n1} | N+2(DA)=${rowData.n2} | N+3(EG)=${rowData.n3}`);
+            const dailySample = rowData.rawRow ? rowData.rawRow.slice(8, 15) : [];
+            console.log(`Row ${idx + 1}: ${rowData.plant} | ${rowData.partNumber} | Daily[8-14]=${dailySample} | N=${rowData.n}`);
           }
         });
 
-        console.log(`✅ Analyze sheet updated: ${analyzeRows.length} rows written`);
+        console.log(`✅ Analyze sheet updated: ${analyzeRows.length} rows with daily data`);
       }
 
       fileName = `Production_Updated_${dateStr}.xlsx`;
