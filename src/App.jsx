@@ -1,6 +1,57 @@
 import React, { useState, useCallback, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
+
+// ==================== XLSX POST-PROCESSOR ====================
+// Force Excel to recalc every formula and refresh every pivot cache on file open.
+// Input: ArrayBuffer of an .xlsx file. Output: patched ArrayBuffer.
+// Safe no-op if the file has no pivot caches.
+const forceRecalcOnOpen = async (buffer) => {
+  const zip = await JSZip.loadAsync(buffer);
+
+  // 1) workbook.xml — ensure fullCalcOnLoad="1" on <calcPr/>
+  const wbFile = zip.file('xl/workbook.xml');
+  if (wbFile) {
+    let xml = await wbFile.async('string');
+    if (/<calcPr\b[^/]*\/>/.test(xml)) {
+      xml = xml.replace(/<calcPr\b([^/]*)\/>/, (m, attrs) => {
+        const hasFull = /fullCalcOnLoad=/.test(attrs);
+        return hasFull
+          ? `<calcPr${attrs.replace(/fullCalcOnLoad="[^"]*"/, 'fullCalcOnLoad="1"')}/>`
+          : `<calcPr${attrs} fullCalcOnLoad="1"/>`;
+      });
+    } else if (/<calcPr\b[^>]*>/.test(xml)) {
+      xml = xml.replace(/<calcPr\b([^>]*)>/, (m, attrs) => {
+        const hasFull = /fullCalcOnLoad=/.test(attrs);
+        return hasFull
+          ? `<calcPr${attrs.replace(/fullCalcOnLoad="[^"]*"/, 'fullCalcOnLoad="1"')}>`
+          : `<calcPr${attrs} fullCalcOnLoad="1">`;
+      });
+    } else {
+      // inject before </workbook>
+      xml = xml.replace('</workbook>', '<calcPr fullCalcOnLoad="1"/></workbook>');
+    }
+    zip.file('xl/workbook.xml', xml);
+  }
+
+  // 2) pivotCacheDefinition*.xml — ensure refreshOnLoad="1"
+  const pivotCachePaths = Object.keys(zip.files).filter(
+    (p) => /^xl\/pivotCache\/pivotCacheDefinition\d+\.xml$/.test(p)
+  );
+  for (const path of pivotCachePaths) {
+    let xml = await zip.file(path).async('string');
+    xml = xml.replace(/<pivotCacheDefinition\b([^>]*)>/, (m, attrs) => {
+      if (/refreshOnLoad=/.test(attrs)) {
+        return `<pivotCacheDefinition${attrs.replace(/refreshOnLoad="[^"]*"/, 'refreshOnLoad="1"')}>`;
+      }
+      return `<pivotCacheDefinition${attrs} refreshOnLoad="1">`;
+    });
+    zip.file(path, xml);
+  }
+
+  return await zip.generateAsync({ type: 'arraybuffer' });
+};
 
 // ==================== ICONS ====================
 const Icons = {
@@ -799,6 +850,7 @@ export default function App() {
   const [tab, setTab] = useState('upload');
   const [mainFile, setMainFile] = useState(null);
   const [mainWorkbook, setMainWorkbook] = useState(null);
+  const [mainRawSheets, setMainRawSheets] = useState(null); // { sheetName: AOA } preserved when ExcelJS fails
   const [sourceFiles, setSourceFiles] = useState([]);
   const [processing, setProcessing] = useState(false);
   const [processStatus, setProcessStatus] = useState('');
@@ -841,6 +893,7 @@ export default function App() {
     setTab('upload');
     setMainFile(null);
     setMainWorkbook(null);
+    setMainRawSheets(null);
     setSourceFiles([]);
     setProcessing(false);
     setProcessStatus('');
@@ -871,16 +924,24 @@ export default function App() {
           sheets: workbook.worksheets.map((ws) => ws.name),
         });
         setMainWorkbook(workbook);
+        setMainRawSheets(null);
         setError(null);
       } catch (excelJSErr) {
         console.warn('ExcelJS failed, using xlsx fallback:', excelJSErr);
         const workbook = await readExcelFileXLSX(file);
+        // Preserve ALL sheets as raw AOA so fallback export can re-emit them
+        const rawSheets = {};
+        workbook.SheetNames.forEach((name) => {
+          const ws = workbook.Sheets[name];
+          rawSheets[name] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false });
+        });
         setMainFile({
           name: file.name,
           size: file.size,
           sheets: workbook.SheetNames,
         });
         setMainWorkbook(null);
+        setMainRawSheets(rawSheets);
         setError('ไฟล์ถูกอ่านด้วย xlsx (อาจไม่สามารถรักษาฟอร์แมตได้ 100%)');
       }
     } catch (err) {
@@ -1147,9 +1208,27 @@ export default function App() {
       fileName = `Production_Updated_${dateStr}.xlsx`;
     } else {
       workbook = new ExcelJS.Workbook();
+
+      // Sheets we will overwrite with freshly generated data
+      const OVERWRITE_SHEETS = new Set(['BP Daily', 'BPK Daily', 'GW Daily', 'SR Daily', 'Summary', 'Analyze']);
+
+      // 1) First, re-emit ALL preserved sheets from the original main file (except the ones we overwrite)
+      //    so that system sheets like "By Plant", "Monthly FC (Don't use)", "Total", "Sheet1", "Sheet2"
+      //    survive the round-trip.
+      if (mainRawSheets) {
+        Object.entries(mainRawSheets).forEach(([sheetName, aoa]) => {
+          if (OVERWRITE_SHEETS.has(sheetName)) return;
+          const ws = workbook.addWorksheet(sheetName);
+          (aoa || []).forEach((row) => {
+            ws.addRow(Array.isArray(row) ? row.map((v) => (v === null ? '' : v)) : []);
+          });
+        });
+      }
+
+      // 2) Daily plant sheets with the consolidated data
       Object.entries(processedData).forEach(([sheetName, rows]) => {
         if (rows.length === 0) return;
-        const worksheet = workbook.addWorksheet(sheetName.replace(' ', '_'));
+        const worksheet = workbook.addWorksheet(sheetName);
         const headerRow = worksheet.addRow(['PART NUMBER', 'PART CODE', 'PART DESC', 'SUPP CODE', 'SHIPPING DOCK', 'DOCK CODE', 'CAR FAMILY', 'PACKING SIZE', 'N', 'N+1', 'N+2', 'N+3']);
         headerRow.font = { bold: true };
         headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
@@ -1204,7 +1283,19 @@ export default function App() {
     }
 
     try {
-      const buffer = await workbook.xlsx.writeBuffer();
+      // Force Excel to recalc all formulas + refresh all pivot caches when the file is opened
+      try {
+        if (workbook.calcProperties) {
+          workbook.calcProperties.fullCalcOnLoad = true;
+        }
+      } catch (_) { /* noop */ }
+
+      let buffer = await workbook.xlsx.writeBuffer();
+      try {
+        buffer = await forceRecalcOnOpen(buffer);
+      } catch (patchErr) {
+        console.warn('forceRecalcOnOpen patch failed, shipping original buffer:', patchErr);
+      }
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
