@@ -1,5 +1,7 @@
 // ==================== FEATURE REGISTRY ====================
-// Optional capabilities plug in here without touching App.jsx.
+// Every `src/features/<id>/index.jsx` that `export default`s a feature object is
+// picked up automatically (Vite import.meta.glob), so adding a capability never
+// requires editing App.jsx or this file.
 //
 // A feature is a plain object:
 // {
@@ -10,6 +12,7 @@
 //     Icon: Icons.Check,                        // component from components/Icons.jsx
 //     enabled: (ctx) => !!ctx.state.processedData,
 //     tooltip: 'ต้องประมวลผลไฟล์ก่อน',           // shown while disabled
+//     badge: (ctx) => 3,                        // optional small counter on the tab
 //     Component,                                // receives { state, actions, monthLabels }
 //   },
 //   headerActions: (ctx) => <button .../>,      // optional: controls in the header bar
@@ -18,12 +21,22 @@
 // }
 //
 // ctx = { state, actions, monthLabels }  (see state/useConsolidator.js)
-export const FEATURES = [];
+const modules = import.meta.glob('./*/index.jsx', { eager: true });
 
-export const registerFeature = (feature) => {
-  if (!feature?.id) throw new Error('feature.id is required');
-  const idx = FEATURES.findIndex((f) => f.id === feature.id);
-  if (idx === -1) FEATURES.push(feature); else FEATURES[idx] = feature;
-  FEATURES.sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
-  return feature;
-};
+export const FEATURES = Object.entries(modules)
+  .map(([file, mod]) => {
+    const feature = mod?.default;
+    if (!feature?.id) {
+      console.warn(`features: ${file} has no default export with an id, skipped`);
+      return null;
+    }
+    return feature;
+  })
+  .filter(Boolean)
+  .sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
+
+const seen = new Set();
+FEATURES.forEach((f) => {
+  if (seen.has(f.id)) console.warn(`features: duplicate feature id "${f.id}"`);
+  seen.add(f.id);
+});
