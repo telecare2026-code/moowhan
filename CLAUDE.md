@@ -1,0 +1,43 @@
+# moowhan — คู่มือสำหรับผู้พัฒนา / agents
+
+เว็บแอป (React 19 + Vite 7 + Tailwind v4, รันในเบราว์เซอร์ล้วน ไม่มี backend) สำหรับรวมไฟล์แผนการผลิตรายเดือนจากโรงงาน Toyota 4 แห่ง
+(BP, BPK, GW, SR) ลงในเทมเพลต Excel ของบริษัท (`template.xlsx`) **ภาษา UI เป็นภาษาไทย**
+
+## คำสั่ง
+- `npm run dev` / `npm run build` / `npm run preview`
+- `npm test` — vitest (ใช้ fixture จริง `template.xlsx` + `input/*.xls`); ต้องผ่านก่อน commit ทุกครั้ง
+- `npm run e2e` — Playwright smoke (`tests/e2e/smoke.mjs`, ต้องมี Chromium: `npx playwright install chromium` หรือ `PLAYWRIGHT_CHROMIUM=/path`)
+
+## โครงสร้าง
+- `src/lib/excel/` — logic ล้วน (ห้ามใช้ DOM/React) เพื่อให้ทดสอบใน Node ได้
+  - `readSource.js` อ่านไฟล์ต้นทาง → `{ rows, meta }` (`meta.productionMonth` จาก `PRODUCTION MONTH`)
+  - `aggregate.js` รวมยอด/ matching / แถวสำหรับ Analyze
+  - `templatePatcher.js` **เขียนลง template .xlsx แบบแก้ XML เฉพาะ cell** (รักษา pivot/สูตร/สไตล์/comment); `upsertSheet` เพิ่ม/แทนที่ sheet แบบค่าล้วน
+  - `exportWorkbook.js` เลือกโหมด template (patcher) หรือ fallback (SheetJS สร้างไฟล์ใหม่); รับ `extraSheets: [{ name, aoa }]`
+  - `index.js` barrel ที่ UI **import แบบ lazy** (`import('../lib/excel/index.js')`) — ห้าม import `xlsx`/`jszip` แบบ static จาก component/state
+- `src/state/useConsolidator.js` — state + actions ทั้งหมด (`setTemplateFile, addSourceFiles, processAll, updateRowValues, exportExcel, log, setNotice, ...`)
+- `src/components/` — UI กลาง (Icons, Modal, Banner, FileDropZone, ProgressBar, ChartDashboard, ExcelPreview และแท็บหลัก)
+- `src/features/<id>/index.jsx` — **ฟีเจอร์เสริม auto‑discover** (ดู `src/features/index.js`): `export default { id, order, tab, headerActions, exportSheets, onProcessed }`
+  - logic ของฟีเจอร์ไว้ไฟล์ข้างเคียง (เช่น `src/features/<id>/logic.js`) และเขียน test ใน `tests/<id>.test.js`
+  - ฟีเจอร์ได้รับ `ctx = { state, actions, monthLabels }`
+- `src/constants.js` — รายชื่อโรงงาน, layout ของ template, สี; `src/utils/format.js` — formatNumber, month labels, column letters, safeSheetName
+
+## กติกา
+- **ห้ามใช้ ExcelJS ตอน runtime** (เป็น devDependency สำหรับ test เท่านั้น) — มันทำ pivot table ในเทมเพลตหาย
+- ห้ามเขียนทับ cell ที่มีสูตรใน template; ทุกการเขียนลง template ต้องผ่าน `templatePatcher.js`
+- ข้อมูลผู้ใช้ไม่ออกจากเบราว์เซอร์ (ไม่มีการเรียก API ภายนอก)
+- ข้อความ UI/ข้อความ error เป็นภาษาไทย อ่านแล้วรู้ว่าต้องทำอะไรต่อ; ศัพท์เทคนิค (N, N+1, Part Number, Pivot) ทับศัพท์ได้
+- Tailwind v4 (ไม่มี `tailwind.config.js`); ใช้ class ที่มีอยู่ในโค้ดเป็นแนวทางสี/ระยะ; ต้องใช้งานได้บนจอมือถือ (ไม่ล้นแนวนอน)
+- Icon ใช้จาก `components/Icons.jsx` (SVG inline) — ไม่เพิ่ม icon library
+- เพิ่ม dependency ใหม่เฉพาะเมื่อจำเป็นจริง และต้องเป็น ESM ที่ใช้ในเบราว์เซอร์ได้
+- ก่อน commit: `npm test` และ `npm run build` ต้องผ่าน; ห้าม skip/ลบ test เพื่อให้ผ่าน
+- commit message เป็น conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`)
+
+## โครงสร้างไฟล์ต้นทาง (TMT forecast .xls)
+แถว 1–12 เป็น key/value (PLANT CODE, PART TYPE, PRODUCTION MONTH=YYYYMM, REVISION TYPE, FORECAST TYPE, WOC WEEK, REVISION NUMBER, ISSUE DATE, REMARKS, DETAILS)
+แถว 13 (index 12) หัวตาราง: `PART NUMBER, PART CODE, PART DESC, SUPP CODE, SHIPPING DOCK, DOCK CODE, CAR FAMILY, PACKING SIZE` ตามด้วย 4 เดือน × (วันที่ 1–31 + ยอดรวม N / N+1 / N+2 / N+3) → ยอดรวมอยู่ index 39, 71, 103, 135
+
+## โครงสร้าง template.xlsx
+- `BP/BPK/GW/SR Daily`: หัวตารางแถว 13, ข้อมูลเริ่มแถว 14 (คัดลอก 1:1 จากไฟล์ต้นทาง), แถวสูตรรวมด้านล่าง
+- `Analyze`: หัวตารางแถว 2, ข้อมูลเริ่มแถว 3, คอลัมน์ B.. = คอลัมน์ A.. ของต้นทาง, คอลัมน์ EH = Plant, คอลัมน์ A/EI/EL/EM เป็นสูตร key สำหรับ pivot
+- `Summary`, `By Plant`, `Total`, `Sheet2` มี pivot/สูตรอ้างถึง sheet ข้างบน — ห้ามแตะ
